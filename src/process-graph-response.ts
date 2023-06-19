@@ -1,19 +1,28 @@
-const { mmClient } = require('./mm-client')
-const FormData = require('form-data');
-const { Log } = require('debug-level')
+import { mmClient } from './mm-client.js'
+import FormData from 'form-data'
+import Log from 'debug-level'
+
 const log = new Log('bot')
 
 const yFilesGPTServerUrl = process.env['YFILES_SERVER_URL']
-const yFilesEndpoint = yFilesGPTServerUrl ? new URL('/json-to-svg', yFilesGPTServerUrl) : undefined
+const yFilesEndpoint = yFilesGPTServerUrl
+  ? new URL('/json-to-svg', yFilesGPTServerUrl)
+  : undefined
 
 /**\
  * @param {string} content
  * @param {string} channelId
  * @returns {Promise<{message, fileId}>}
  */
-async function processGraphResponse (content, channelId) {
-  const result = {
+export async function processGraphResponse(content: string, channelId: string) {
+  const result: {
+    message: string
+    fileId?: string
+    props?: { [originalMessage: string]: string }
+  } = {
     message: content,
+    fileId: undefined,
+    props: undefined,
   }
   if (!yFilesGPTServerUrl) {
     return result
@@ -24,7 +33,10 @@ async function processGraphResponse (content, channelId) {
     replaceEnd += '</graph>'.length
   }
   if (replaceStart && replaceEnd) {
-    const graphContent = content.substring(replaceStart, replaceEnd).replace(/<\/?graph>/gi, '').trim()
+    const graphContent = content
+      .substring(replaceStart, replaceEnd)
+      .replace(/<\/?graph>/gi, '')
+      .trim()
 
     try {
       const sanitized = JSON.parse(graphContent)
@@ -32,13 +44,13 @@ async function processGraphResponse (content, channelId) {
       const pre = content.substring(0, replaceStart)
       const post = content.substring(replaceEnd)
 
-      if (post.trim().length < 1){
+      if (post.trim().length < 1) {
         result.message = pre
       } else {
         result.message = `${pre} [see attached image] ${post}`
       }
 
-      result.props = {originalMessage: content}
+      result.props = { originalMessage: content }
 
       result.fileId = fileId
     } catch (e) {
@@ -50,33 +62,29 @@ async function processGraphResponse (content, channelId) {
   return result
 }
 
-async function generateSvg(jsonString) {
+async function generateSvg(jsonString: string) {
+  // @ts-expect-error TS(2345): Argument of type 'URL | undefined' is not assignab... Remove this comment to see the full error message
   return fetch(yFilesEndpoint, {
     method: 'POST',
     body: jsonString,
     headers: {
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+    },
+  }).then((response: { ok: unknown; text: () => unknown }) => {
+    if (!response.ok) {
+      throw new Error('Bad response from server')
     }
+    return response.text()
   })
-    .then(response => {
-      if (!response.ok) {
-        throw new Error("Bad response from server");
-      }
-      return response.text();
-    })
 }
 
-async function jsonToFileId (jsonString, channelId) {
+async function jsonToFileId(jsonString: string, channelId: string) {
   const svgString = await generateSvg(jsonString)
   const form = new FormData()
-  form.append('channel_id', channelId);
-  form.append('files', Buffer.from(svgString), 'diagram.svg');
+  form.append('channel_id', channelId)
+  form.append('files', Buffer.from(svgString), 'diagram.svg')
   log.trace('Appending Diagram SVG', svgString)
   const response = await mmClient.uploadFile(form)
   log.trace('Uploaded a file with id', response.file_infos[0].id)
   return response.file_infos[0].id
-}
-
-module.exports = {
-  processGraphResponse
 }
