@@ -25,16 +25,17 @@ or when [running the docker image](#using-the-ready-made-image) or when configur
 | MATTERMOST_TOKEN    | yes      | `abababacdcdcd`             | The authentication token from the logged in mattermost bot                                  |
 | OPENAI_API_KEY      | yes      | `sk-234234234234234234`     | The OpenAI API key to authenticate with OpenAI                                              |
 | OPENAI_MODEL_NAME   | no       | `gpt-3.5-turbo`             | The OpenAI language model to use, defaults to `gpt-3.5-turbo`                               |
-| OPENAI_MAX_TOKENS   | no       | `2000`                      | The maximum number of tokens to pass to the OpenAI API, defaults to 2000                    |
+| OPENAI_MAX_TOKENS   | no       | `2000`                      | The max_tokens parameter to pass to the OpenAI API, with a default value of 2000. API will answer up to this number of tokens |
 | OPENAI_TEMPERATURE  | no       | `0.2`                       | The sampling temperature to use, between 0 and 2, defaults to 1. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic. |
 | AZURE_OPENAI_API_KEY | no       | `0123456789abcdefghijklmno` | The Azure OpenAI Service API key to authoenticate                                           |
 | AZURE_OPENAI_API_INSTANCE_NAME   | no | `example-name`        | The instance name on the Azure OpenAI Service                                               |
 | AZURE_OPENAI_API_DEPLOYMENT_NAME | no | `gpt-35-turbo`        | The name of the deployed model on the Azure OpenAI Service                                  |
 | AZURE_OPENAI_API_VERSION         | no | `2023-03-15-preview`  | The Azure OpenAI version                                                                    |
- | YFILES_SERVER_URL   | no       | `http://localhost:3835`     | The URL to the yFiles graph service for embedding auto-generated diagrams.                  |
- | NODE_EXTRA_CA_CERTS | no       | `/file/to/cert.crt`         | a link to a certificate file to pass to node.js for authenticating self-signed certificates |
- | MATTERMOST_BOTNAME  | no       | `"@chatgpt"`                | the name of the bot user in Mattermost, defaults to '@chatgpt'                              |
- | DEBUG_LEVEL         | no       | `TRACE`                     | a debug level used for logging activity, defaults to `INFO`                                 |
+| YFILES_SERVER_URL   | no       | `http://localhost:3835`     | The URL to the yFiles graph service for embedding auto-generated diagrams.                  |
+| NODE_EXTRA_CA_CERTS | no       | `/file/to/cert.crt`         | a link to a certificate file to pass to node.js for authenticating self-signed certificates |
+| MATTERMOST_BOTNAME  | no       | `"@chatgpt"`                | the name of the bot user in Mattermost, defaults to '@chatgpt'                              |
+| MAX_PROMPT_TOKENS   | no       | `2000`                      | Maximum token count of the prompt passed to the OpenAI API. default is 2000                 |
+| DEBUG_LEVEL         | no       | `TRACE`                     | a debug level used for logging activity, defaults to `INFO`                                 |
 
 > **Note**
 > The `YFILES_SERVER_URL` is used for automatically converting text information created by the bot into diagrams.
@@ -53,9 +54,9 @@ or when [running the docker image](#using-the-ready-made-image) or when configur
 * Splitting message that are too long
 * Support GitLab AutoDevOps by test dummy
 
-## Using the docker image
+## Using the ready-made image
 
-Use your builted and pushed image.
+Use the prebuilt image from [`gitlab.on-o.com/docker/chatgpt-mattermost-bot/release`](https://gitlab.on-o.com/Docker/chatgpt-mattermost-bot/container_registry/150)
 
 ```bash
 docker run -d --restart unless-stopped \
@@ -63,7 +64,7 @@ docker run -d --restart unless-stopped \
   -e MATTERMOST_TOKEN=abababacdcdcd \
   -e OPENAI_API_KEY=234234234234234234 \
   --name chatbot \
-  <Your Docker Registry>/chatgpt-mattermost-bot:latest
+  gitlab.on-o.com/docker/chatgpt-mattermost-bot/release:latest
 ```
 
 As Azure OpenAI Service case
@@ -74,7 +75,7 @@ docker run -d --restart unless-stopped \
   -e AZURE_OPENAI_API_KEY=234234234234234234 \
   -e AZURE_OPENAI_API_INSTANCE_NAME=example-name \
   --name chatbot \
-  <Your Docker Registry>/chatgpt-mattermost-bot:latest
+  gitlab.on-o.com/docker/chatgpt-mattermost-bot/release:latest
 ```
 
 

@@ -1,13 +1,11 @@
-import { mmClient } from './mm-client.js'
 import FormData from 'form-data'
 import Log from 'debug-level'
+import { mmClient } from './mm-client.js'
 
 const log = new Log('bot')
 
 const yFilesGPTServerUrl = process.env['YFILES_SERVER_URL']
-const yFilesEndpoint = yFilesGPTServerUrl
-  ? new URL('/json-to-svg', yFilesGPTServerUrl)
-  : undefined
+const yFilesEndpoint = yFilesGPTServerUrl ? new URL('/json-to-svg', yFilesGPTServerUrl) : undefined
 
 /**\
  * @param {string} content

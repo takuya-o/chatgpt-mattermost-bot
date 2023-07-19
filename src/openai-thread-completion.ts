@@ -1,8 +1,9 @@
 import {
-  Configuration,
-  OpenAIApi,
   ChatCompletionRequestMessage,
+  Configuration,
   CreateChatCompletionResponse,
+  CreateCompletionResponseUsage,
+  OpenAIApi,
 } from 'openai'
 import { AxiosResponse } from 'axios'
 import { Log } from 'debug-level'
@@ -29,36 +30,40 @@ if (azureOpenAiApiKey) {
 const openai = new OpenAIApi(configuration)
 
 const model = process.env['OPENAI_MODEL_NAME'] ?? 'gpt-3.5-turbo'
-const max_tokens = Number(process.env['OPENAI_MAX_TOKENS'] ?? 2000)
+const MAX_TOKENS = Number(process.env['OPENAI_MAX_TOKENS'] ?? 2000)
 const temperature = Number(process.env['OPENAI_TEMPERATURE'] ?? 1)
 
-export async function continueThread(
-  messages: Array<ChatCompletionRequestMessage>,
-) {
+export async function continueThread(messages: Array<ChatCompletionRequestMessage>) {
   let answer = ''
+  let usage: CreateCompletionResponseUsage
   try {
     const response = await openai.createChatCompletion({
       messages: messages,
       model: model,
-      max_tokens: max_tokens,
+      max_tokens: MAX_TOKENS,
       temperature: temperature,
     })
     log.info(response)
-    answer =
-      response.data?.choices?.[0]?.message?.content +
-      formatUsageStatistics(response)
+    answer = response.data?.choices?.[0]?.message?.content + formatUsageStatistics(response)
+    if (!response.data.usage) {
+      usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+    } else {
+      usage = response.data.usage
+    }
   } catch (e) {
     log.error(e)
-    // @ts-expect-error TS(2571): Object is of type 'unknown'.
-    answer = 'Error: ' + e.message
+    if (e instanceof Error) {
+      answer = 'Error: ' + e.message
+    } else {
+      answer = 'Unexpected Exception: ' + e
+    }
+    usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
   }
-  return answer
+  return { answer, usage }
 
-  function formatUsageStatistics(
-    response: AxiosResponse<CreateChatCompletionResponse>,
-  ) {
+  function formatUsageStatistics(response: AxiosResponse<CreateChatCompletionResponse>) {
     return (
-      '\n\nPrompt:' +
+      '\nPrompt:' +
       response.data.usage?.prompt_tokens +
       ' Completion:' +
       response.data.usage?.completion_tokens +

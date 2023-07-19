@@ -1,0 +1,65 @@
+# # SaaS版
+# engines:
+#   # ... CONFIG CONTENT ...
+#   tslint:
+#     enabled: true
+#     # ... CONFIG CONTENT ...
+#     checks:
+#       comment-format:
+#         enabled: false
+#       whitespace:
+#         enabled: false
+#       semicolon:
+#         enabled: false
+#       no-console:
+#         enabled: false
+# # ... CONFIG CONTENT ...
+---
+version: "2"
+plugins:
+  # csslint:
+  #   enabled: true
+  # coffeelint:
+  #   enabled: true
+  duplication:
+    enabled: true
+    config:
+      languages:
+# https://docs.codeclimate.com/docs/duplication
+        - typescript
+        - ruby
+        - javascript
+        - python
+        - php
+# https://docs.codeclimate.com/docs/list-of-engines
+# https://docs.codeclimate.com/docs/tslint
+#  $  ./node_modules/.bin/tslint src/**/*.ts
+  # tslint:
+  #   enabled: true
+  #   config: tslint.json
+  eslint:
+    enabled: true
+    channel: "stable"
+    config: .eslintrc.json
+  fixme:
+    enabled: true
+  rubocop:
+    enabled: true
+exclude_patterns:
+  - config/
+  - db/
+  - dist/
+  - features/
+  - "**/node_modules/"
+  - script/
+  - "**/spec/"
+  - "**/test/"
+  - "**/tests/"
+  - Tests/
+  - "**/vendor/"
+  - "**/*_test.go"
+  - "**/*.d.ts"
+  - "**/*.min.js"
+  - "**/*.min.css"
+  - "**/__tests__/"
+  - "**/__mocks__/"

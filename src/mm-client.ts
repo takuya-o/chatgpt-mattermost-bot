@@ -1,7 +1,8 @@
-import pkg from '@mattermost/client'
-import { WebSocket } from 'ws'
 import { Log } from 'debug-level'
+import { WebSocket } from 'ws'
+import pkg from '@mattermost/client'
 
+// eslint-disable-next-line @typescript-eslint/naming-convention
 const { Client4, WebSocketClient } = pkg
 const log = new Log('bot')
 

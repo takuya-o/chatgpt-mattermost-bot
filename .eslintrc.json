@@ -21,15 +21,43 @@
     //"packageManager": "npm",
     "env": { "node": true },
     "rules": {
+      "max-lines-per-function": ["warn", {"max": 75}],  //GitLab25
+      "max-lines": ["warn", {"max": 500}], //GitLab250
+      //"complexity": ["error", { "max": 5 }], //GitLab5
       "import/order": "off",
-      "sort-imports": "off",
+      "sort-imports": "warn",
 //      "simple-import-sort/imports": "error",
 //      "simple-import-sort/exports": "error",
       "import/first": "error",
       "import/newline-after-import": "error",
       "import/no-duplicates": "error",
       "@typescript-eslint/no-non-null-assertion": "off",
-      "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
+      "@typescript-eslint/no-unused-vars": ["error", {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^[A-Z]"
+      }],
+      /** 命名規則 */
+      "@typescript-eslint/naming-convention": [
+        "error",
+        { // classやtypeなどは頭大文
+          "selector": "typeLike",
+          "format": ["PascalCase"]
+        },
+        { // グローバル定数はアッパーケース
+          "selector": "variable",
+          "modifiers": ["global", "const"],
+          "format": ["camelCase", "UPPER_CASE"]
+        },
+        { // 変数名はキャメルケース
+          "selector": "variable",
+          "format": ["camelCase", "UPPER_CASE"]
+        }
+      ],
+      // 未使用の変数や関数は宣言禁止、ただし大文字で始まっているものはクラスなので許す
+      "no-unused-vars": ["error", {
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^[A-Z]"
+      }],
       "no-console": "error"
     }
   }
