@@ -1,46 +1,72 @@
-import { Log } from 'debug-level'
+import Log from 'debug-level'
+import { MessageListener } from '@mattermost/client/lib/websocket'
 import { WebSocket } from 'ws'
 import pkg from '@mattermost/client'
-
-// eslint-disable-next-line @typescript-eslint/naming-convention
-const { Client4, WebSocketClient } = pkg
-const log = new Log('bot')
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 declare const global: any
 if (!global.WebSocket) {
   global.WebSocket = WebSocket
 }
+//Upstream
+// if(!global.WebSocket) {
+//     global.WebSocket = require('ws')
+// }
 
-const mattermostToken = process.env['MATTERMOST_TOKEN']
-const matterMostURLString = process.env['MATTERMOST_URL']
+// eslint-disable-next-line @typescript-eslint/naming-convention
+const { Client4, WebSocketClient } = pkg
+const log = new Log('bot')
 
-// mattermostTokeかmatterMostURLStringがundefinedだったらエラー
+const mattermostToken = process.env['MATTERMOST_TOKEN']!
+const matterMostURLString = process.env['MATTERMOST_URL']!
+
+// mattermostTokenかmatterMostURLStringがundefinedだったらエラー
 if (!mattermostToken || !matterMostURLString) {
   log.error('MATTERMOST_TOKEN or MATTERMOST_URL is undefined')
   throw new Error('MATTERMOST_TOKEN or MATTERMOST_URL is undefined')
 }
 
-const client = new Client4()
-client.setUrl(matterMostURLString)
-client.setToken(mattermostToken)
+log.trace('Configuring Mattermost URL to ' + matterMostURLString)
+
+export const mmClient = new Client4()
+mmClient.setUrl(matterMostURLString)
+mmClient.setToken(mattermostToken)
 
 export const wsClient = new WebSocketClient()
-const wsUrl = new URL(client.getWebSocketUrl())
+const wsUrl = new URL(mmClient.getWebSocketUrl())
 wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss' : 'ws'
 
 new Promise((_resolve, reject) => {
-  wsClient.addCloseListener((_connectFailCount: number) => reject())
-  wsClient.addErrorListener((event: Event) => {
-    reject(event)
+  wsClient.addCloseListener(() => reject())
+  wsClient.addErrorListener((e: Event) => {
+    reject(e)
   })
 })
-  .then(() => process.exit(0))
+  .then(() => {
+    process.exit(0)
+  })
   .catch(reason => {
     log.error(reason)
     process.exit(-1)
   })
 
-wsClient.initialize(wsUrl.toString(), mattermostToken)
+/**
+ * this resolves an issue with lost web messages and the client rebooting endlessly -
+ * we need to have a listener attached to the client from the start so that it does
+ * not reconnect infinitely, internally
+ */
+function workaroundWebsocketPackageLostIssue(webSocketClient: pkg.WebSocketClient) {
+  // after a hundred messages it should be ok to unregister - the actual
+  // listener should have been added by now.
+  let messageCount = 100 //TODO: magic number
+  const firstMessagesListener: MessageListener = (_e: unknown) => {
+    if (messageCount-- < 1) {
+      webSocketClient.removeMessageListener(firstMessagesListener)
+    }
+  }
+  webSocketClient.addMessageListener(firstMessagesListener)
+}
 
-export const mmClient = client
+workaroundWebsocketPackageLostIssue(wsClient)
+
+wsClient.initialize(wsUrl.toString(), mattermostToken)

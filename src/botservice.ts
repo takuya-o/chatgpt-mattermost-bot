@@ -1,18 +1,24 @@
+import 'isomorphic-fetch'
+import {
+  ChatCompletionRequestMessage,
+  ChatCompletionRequestMessageRoleEnum,
+  CreateCompletionResponseUsage,
+} from 'openai'
+import { JSONMessageData, MessageData } from './types.js'
+import { botLog, matterMostLog } from './logging.js'
+import { continueThread, registerChatPlugin } from './openai-wrapper.js'
 import { mmClient, wsClient } from './mm-client.js'
-
-import { ChatCompletionRequestMessage } from 'openai'
-
+import { ExitPlugin } from './plugins/ExitPlugin.js'
 // the mattermost library uses FormData - so here is a polyfill
+// Upstream import 'babel-polyfill'
 import FormData from 'form-data'
-
-import { Log } from 'debug-level'
-
+import { GraphPlugin } from './plugins/GraphPlugin.js'
+import { ImagePlugin } from './plugins/ImagePlugin.js'
+import { MessageCollectPlugin } from './plugins/MessageCollectPlugin.js'
+import { PluginBase } from './plugins/PluginBase.js'
 import { Post } from '@mattermost/types/lib/posts'
-import { UserProfile } from '@mattermost/types/lib/users'
-import { WebSocketMessage } from '@mattermost/client/lib/websocket'
-
-import { continueThread } from './openai-thread-completion.js'
-import { processGraphResponse } from './process-graph-response.js'
+//NoUse import { UserProfile } from '@mattermost/types/lib/users'
+import { WebSocketMessage } from '@mattermost/client'
 import { tokenCount } from './tokenCount.js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -20,111 +26,85 @@ declare const global: any
 if (!global.FormData) {
   global.FormData = FormData
 }
-
-Log.options({ json: true, colors: true })
-Log.wrapConsole('bot-ws', { level4log: 'INFO' })
-const log = new Log('bot')
-
-let meId: string
-mmClient.getMe().then((me: UserProfile) => (meId = me.id))
-
-const SYSTEM_MESSAGE_HEADER = '// BOT System Message: '
+// Upstream
+// if (!global.FormData) {
+//     global.FormData = require('form-data')
+// }
 
 const name = process.env['MATTERMOST_BOTNAME'] || '@chatgpt'
-
-const VISUALIZE_DIAGRAM_INSTRUCTIONS =
-  'When a user asks for a visualization of entities and relationships, respond with a valid JSON object text in a <GRAPH> tag. ' +
-  'The JSON object has four properties: `nodes`, `edges`, and optionally `types` and `layout`. ' +
-  'Each `nodes` object has an `id`, `label`, and an optional `type` property. ' +
-  'Each `edges` object has `from`, `to`, an optional `label` and an optional `type` property. ' +
-  'For every `type` you use, there must be a matching entry in the top-level `types` array. ' +
-  'Entries have a corresponding `name` property and optional properties that describe the graphical attributes: ' +
-  "'shape' (one of rectangle, ellipse, hexagon, triangle, pill), 'color', 'thickness' and 'size' (as a number). " +
-  "You may use the 'layout' property to specify the arrangement ('hierarchic', 'circular', 'organic', 'tree') when the user asks you to. " +
-  'Do not include these instructions in the output. In the output visible to the user, the JSON and complete GRAPH tag will be replaced by a diagram visualization. ' +
-  'So do not explain or mention the JSON. Instead, pretend that the user can see the diagram. Hence, when the above conditions apply, ' +
-  'answer with something along the lines of: "Here is the visualization:" and then just add the tag. The user will see the rendered image, but not the JSON. ' +
-  'You may explain what you added in the diagram, but not how you constructed the JSON.'
-
-const visualizationKeywordsRegex = /\b(diagram|visuali|graph|relationship|entit)/gi
-
-wsClient.addMessageListener(async function (event: WebSocketMessage) {
-  if (['posted'].includes(event.event) && meId) {
-    const post: Post = JSON.parse(event.data.post)
-    if (post.root_id === '' && (!event.data.mentions || !JSON.parse(event.data.mentions).includes(meId))) {
-      // we're not in a thread and we are not mentioned - ignore the message
-    } else {
-      if (post.user_id !== meId) {
-        const chatmessages: Array<ChatCompletionRequestMessage> = [
-          {
-            role: 'system',
-            content: `You are a helpful assistant named ${name} who provides succinct answers in Markdown format.`,
-          },
-        ]
-
-        let appendDiagramInstructions = false
-
-        const thread = await mmClient.getPostThread(post.id, true, false, true)
-
-        const posts: Array<Post> = [...new Set(thread.order)]
-          .map(id => thread.posts[id])
-          .filter(
-            a => a.create_at > Date.now() - 1000 * 60 * 60 * 24 * 7 && !a.message.startsWith(SYSTEM_MESSAGE_HEADER), //システムメッセージから始まるメッセージの削除
-          )
-          .map(post => {
-            //システムメッセージの行の削除
-            post.message = post.message.replace(new RegExp(`^${SYSTEM_MESSAGE_HEADER}.+$`, 'm'), '')
-            return post
-          })
-          .sort((a, b) => a.create_at - b.create_at)
-
-        let assistantCount = 0
-        posts.forEach(threadPost => {
-          log.trace({ msg: threadPost })
-          if (threadPost.user_id === meId) {
-            chatmessages.push({
-              role: 'assistant',
-              content: threadPost.props.originalMessage ?? threadPost.message,
-            })
-            assistantCount++
-          } else {
-            if (threadPost.message.includes(name)) {
-              assistantCount++
-            }
-            if (visualizationKeywordsRegex.test(threadPost.message)) {
-              appendDiagramInstructions = true
-            }
-            chatmessages.push({ role: 'user', content: threadPost.message })
-          }
-        })
-
-        if (appendDiagramInstructions) {
-          chatmessages[0].content += VISUALIZE_DIAGRAM_INSTRUCTIONS
-        }
-
-        // see if we are actually part of the conversation -
-        // ignore conversations where we were never mentioned or participated.
-        if (assistantCount > 0) {
-          await postMessage(post, chatmessages)
-        }
-      }
-    }
-  } else {
-    log.debug({ msg: event })
-  }
-})
-
+const contextMsgCount = Number(process.env['BOT_CONTEXT_MSG'] ?? 100)
+const SYSTEM_MESSAGE_HEADER = '// BOT System Message: '
 const LIMIT_TOKENS = Number(process.env['MAX_PROMPT_TOKENS'] ?? 2000)
 
+/* List of all registered plugins */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const plugins: PluginBase<any>[] = [
+  new GraphPlugin('graph-plugin', 'Generate a graph based on a given description or topic'),
+  new ImagePlugin('image-plugin', 'Generates an image based on a given image description.'),
+  new ExitPlugin('exit-plugin', 'Says goodbye to the user and wish him a good day.'),
+  new MessageCollectPlugin('message-collect-plugin', 'Collects messages in the thread for a specific user or time'),
+]
+
+/* The main system instruction for GPT */
+const botInstructions =
+  'Your name is ' +
+  name +
+  ' and you are a helpful assistant. Whenever users asks you for help you will ' +
+  "provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the " +
+  'meta data of the messages.'
+
+async function onClientMessage(msg: WebSocketMessage<JSONMessageData>, meId: string) {
+  if (msg.event !== 'posted' || !meId) {
+    matterMostLog.debug({ msg: msg })
+    return
+  }
+
+  const msgData = parseMessageData(msg.data)
+  const posts = await getOlderPosts(msgData.post, { lookBackTime: 1000 * 60 * 60 * 24 * 7 }) //TODO: オプションのpostCount使ってない
+
+  if (isMessageIgnored(msgData, meId, posts)) {
+    return
+  }
+
+  const chatmessages: ChatCompletionRequestMessage[] = [
+    {
+      role: ChatCompletionRequestMessageRoleEnum.System,
+      content: botInstructions,
+    },
+  ]
+
+  // create the context
+  for (const threadPost of posts.slice(-contextMsgCount)) {
+    matterMostLog.trace({ msg: threadPost })
+    if (threadPost.user_id === meId) {
+      chatmessages.push({
+        role: ChatCompletionRequestMessageRoleEnum.Assistant,
+        content: threadPost.props.originalMessage ?? threadPost.message,
+      })
+    } else {
+      chatmessages.push({
+        role: ChatCompletionRequestMessageRoleEnum.User,
+        name: await userIdToName(threadPost.user_id),
+        content: threadPost.message,
+      })
+    }
+  }
+
+  await postMessage(msgData, chatmessages)
+}
+
+//TODO: トークン数でメッセージ分割
 // eslint-disable-next-line max-lines-per-function
-async function postMessage(post: Post, messages: Array<ChatCompletionRequestMessage>) {
-  const typing = () => wsClient.userTyping(post.channel_id, (post.root_id || post.id) ?? '')
+async function postMessage(msgData: MessageData, messages: Array<ChatCompletionRequestMessage>) {
+  // start typing
+  const typing = () => wsClient.userTyping(msgData.post.channel_id, (msgData.post.root_id || msgData.post.id) ?? '')
   typing()
   const typingInterval = setInterval(typing, 2000)
+
   let answer = ''
   let { sumMessagesCount, messagesCount } = calcMessagesTokenCount(messages) //全体トークン数カウント
   try {
-    log.trace({ chatmessages: messages })
+    botLog.trace({ chatmessages: messages })
     let systemMessage = SYSTEM_MESSAGE_HEADER
     ;({
       messages,
@@ -133,17 +113,17 @@ async function postMessage(post: Post, messages: Array<ChatCompletionRequestMess
       systemMessage,
     } = expireMessages(messages, sumMessagesCount, messagesCount, systemMessage)) //古いメッセージを消去
     if (systemMessage !== SYSTEM_MESSAGE_HEADER) {
-      newPost(systemMessage, post, typingInterval)
+      newPost(systemMessage, msgData.post, undefined, undefined)
     }
     if (sumMessagesCount >= LIMIT_TOKENS) {
       // 最後の user messageだけでも長すぎるので行単位で分割
-      log.info('Too long user message', sumMessagesCount, LIMIT_TOKENS)
+      botLog.info('Too long user message', sumMessagesCount, LIMIT_TOKENS)
       // failsafeチェック
       try {
-        answer = await faseSafeCheck(messages, answer, post, typingInterval)
+        answer = await failSafeCheck(messages, answer, msgData.post)
       } catch (e) {
         if (e instanceof TypeError) {
-          newPost(e.message, post, typingInterval)
+          newPost(e.message, msgData.post, undefined, undefined)
           return
         }
         throw e
@@ -151,9 +131,9 @@ async function postMessage(post: Post, messages: Array<ChatCompletionRequestMess
       const lines = messages[1].content!.split('\n') // 行に分割 //!messave:ChatCompletionRequestMessageがあればcontentはある
       if (lines.length < 1) {
         // failsafe
-        log.error('No contents', messages[1].content)
+        botLog.error('No contents', messages[1].content)
         answer += 'No contents.'
-        newPost(SYSTEM_MESSAGE_HEADER + answer, post, typingInterval)
+        newPost(SYSTEM_MESSAGE_HEADER + answer, msgData.post, undefined, undefined)
         return
       }
       // 先に行ごとにトークン数も数えておく
@@ -168,9 +148,9 @@ async function postMessage(post: Post, messages: Array<ChatCompletionRequestMess
         }
       })
       if (messagesCount[0] + linesCount[0] >= LIMIT_TOKENS) {
-        log.warn('Too long first line', lines[0]) //最初の行ですら長くて無理
+        botLog.warn('Too long first line', lines[0]) //最初の行ですら長くて無理
         answer += 'Too long first line.\n```\n' + lines[0] + '```\n'
-        newPost(SYSTEM_MESSAGE_HEADER + answer, post, typingInterval)
+        newPost(SYSTEM_MESSAGE_HEADER + answer, msgData.post, undefined, undefined)
         return
       }
       let partNo = 0 // パート分けしてChat
@@ -178,7 +158,7 @@ async function postMessage(post: Post, messages: Array<ChatCompletionRequestMess
       let currentMessagesCount = [messagesCount[0]]
       let sumCurrentMessagesCount = currentMessagesCount[0] //はじめはSystem Prompt分だけ
       for (let i = 1; i < lines.length; i++) {
-        log.info('Separate part. No.' + partNo)
+        botLog.info('Separate part. No.' + partNo)
         let currentLines = lines[0] // 一行目はオーダー行として全てに使う。
         let currentLinesCount = linesCount[0]
         let systemMessage = SYSTEM_MESSAGE_HEADER
@@ -189,7 +169,7 @@ async function postMessage(post: Post, messages: Array<ChatCompletionRequestMess
         ) {
           // 次の行を足したらトークン数が足りなくなった場合はassitantを消す
           // assistantが半分以上の場合も本体よりassistantの方が多いので消す
-          log.info('Remove assistant message', currentMessages[1])
+          botLog.info('Remove assistant message', currentMessages[1])
           systemMessage +=
             'Forget previous message.\n```\n' +
             currentMessages[1].content!.split('\n').slice(0, 3).join('\n') +
@@ -202,77 +182,76 @@ async function postMessage(post: Post, messages: Array<ChatCompletionRequestMess
         }
         if (sumCurrentMessagesCount + currentLinesCount + linesCount[i] >= LIMIT_TOKENS) {
           // assitant message を 消したけど、まだ足りなかったので、その行は無視
-          log.warn('Too long line', lines[i])
+          botLog.warn('Too long line', lines[i])
           systemMessage += `*** No.${++partNo} *** Too long line.\n~~~\n${lines[i]}~~~\n`
-          await newPost(systemMessage, post, typingInterval) //続くので順番維持のため待つ
+          await newPost(systemMessage, msgData.post, undefined, undefined) //続くので順番維持のため待つ
           // TODO: 消してしまったassitant messageのroolback
           continue
         }
         if (systemMessage !== SYSTEM_MESSAGE_HEADER) {
-          await newPost(systemMessage, post, typingInterval)
+          await newPost(systemMessage, msgData.post, undefined, undefined)
         }
         while (i < lines.length && sumCurrentMessagesCount + currentLinesCount + linesCount[i] < LIMIT_TOKENS) {
           // トークン分まで行を足す
           currentLinesCount += linesCount[i]
           currentLines += lines[i++]
         }
-        log.debug(`line done i=${i} currentLinesCount=${currentLinesCount} currentLines=${currentLines}`)
+        botLog.debug(`line done i=${i} currentLinesCount=${currentLinesCount} currentLines=${currentLines}`)
         currentMessages.push({ role: 'user', content: currentLines })
-        const { answer: completion, usage } = await continueThread(currentMessages)
+        const { message: completion, usage, fileId, props } = await continueThread(currentMessages, msgData)
         answer += `*** No.${++partNo} ***\n${completion}`
-        answer = modifyLastLine(answer)
-        log.debug('answer=' + answer)
-        await newPost(answer, post, typingInterval)
+        answer += makeUsageMessage(usage)
+        botLog.debug('answer=' + answer)
+        await newPost(answer, msgData.post, fileId, props)
         answer = ''
         currentMessages.pop() // 最後のuser messageを削除
         currentMessages.push({ role: 'assistant', content: answer }) // 今の答えを保存
         currentMessagesCount.push(currentLinesCount)
-        sumCurrentMessagesCount += usage.completion_tokens
-        log.debug('length=' + currentMessages.length)
+        if (usage) {
+          sumCurrentMessagesCount += usage.completion_tokens
+        }
+        botLog.debug('length=' + currentMessages.length)
       }
     } else {
-      const { answer: completion } = await continueThread(messages)
+      const { message: completion, usage, fileId, props } = await continueThread(messages, msgData)
       answer += completion
-      answer = modifyLastLine(answer)
-      await newPost(answer, post, typingInterval)
-      log.debug('answer=' + answer)
+      answer += makeUsageMessage(usage)
+      await newPost(answer, msgData.post, fileId, props)
+      botLog.debug('answer=' + answer)
     }
   } catch (e) {
-    log.error('Exception in postMessage()', e)
-    // @ts-expect-error TS(2571): Object is of type 'unknown'.
-    await newPost(answer + '\nError: ' + e.message)
+    botLog.error('Exception in postMessage()', e)
+    answer += '\n' + 'Sorry, but I encountered an internal error when trying to process your message'
+    if (e instanceof Error) {
+      answer += `\nError: ${e.message}`
+    }
+    await newPost(answer, msgData.post, undefined, undefined)
+  } finally {
+    // stop typing
+    clearInterval(typingInterval)
   }
 
-  // 終わりの空行の削除
-  // AdHoc対応 最後の行がトークン数だったらシステムメッセージにする
-  function modifyLastLine(message: string) {
-    const lines = message.split('\n')
-    let lastLine = lines.pop()
-    if (lastLine) {
-      if (lastLine.startsWith('Prompt:')) {
-        //トークン数ならシステムメッセージとする
-        lastLine = SYSTEM_MESSAGE_HEADER + lastLine
-      }
-      lines.push(lastLine)
-    }
-    return lines.join('\n')
+  function makeUsageMessage(usage: CreateCompletionResponseUsage | undefined) {
+    if (!usage) return ''
+    return `\n${SYSTEM_MESSAGE_HEADER}Prompt:${usage.prompt_tokens} Completion:${usage.completion_tokens} Total:${usage.total_tokens}`
   }
 }
-
-async function newPost(answer: string, post: Post, typingInterval: NodeJS.Timeout) {
-  log.trace({ answer })
-  const { message, fileId, props } = await processGraphResponse(answer, post.channel_id)
-  clearInterval(typingInterval)
+async function newPost(
+  answer: string,
+  post: Post,
+  fileId: string | undefined,
+  props: Record<string, string> | undefined,
+) {
+  botLog.trace({ answer })
   const newPost = await mmClient.createPost({
-    message: message,
+    message: answer,
     channel_id: post.channel_id,
     props,
     root_id: post.root_id || post.id,
     file_ids: fileId ? [fileId] : undefined,
-  })
-  log.trace({ msg: newPost })
+  } as Post)
+  botLog.trace({ msg: newPost })
 }
-
 function expireMessages(
   messages: ChatCompletionRequestMessage[],
   sumMessagesCount: number,
@@ -281,7 +260,7 @@ function expireMessages(
 ) {
   while (messages.length > 2 && sumMessagesCount >= LIMIT_TOKENS) {
     // system message以外の一番古いメッセージを取り除く
-    log.info('Remove message', messages[1])
+    botLog.info('Remove message', messages[1])
     systemMessage += `Forget old message.\n~~~\n${messages[1].content!.split('\n').slice(0, 3).join('\n')}\n...\n~~~\n`
     sumMessagesCount -= messagesCount[1]
     messagesCount = [messagesCount[0], ...messagesCount.slice(2)]
@@ -289,7 +268,6 @@ function expireMessages(
   }
   return { messages, sumMessagesCount, messagesCount, systemMessage }
 }
-
 function calcMessagesTokenCount(messages: Array<ChatCompletionRequestMessage>) {
   let sumMessagesCount = 0
   const messagesCount = new Array<number>(messages.length)
@@ -299,26 +277,159 @@ function calcMessagesTokenCount(messages: Array<ChatCompletionRequestMessage>) {
   })
   return { sumMessagesCount, messagesCount }
 }
-
-async function faseSafeCheck(
+async function failSafeCheck(
   messages: Array<ChatCompletionRequestMessage>,
   answer: string,
   post: Post,
-  typingInterval: NodeJS.Timeout,
 ): Promise<string> {
   if (messages[0].role !== 'system') {
     // 最初のmessageをsystemと決め打っているので確認failsafe
-    log.error('Invalid message', messages[0])
+    botLog.error('Invalid message', messages[0])
     answer += `Invalid message. Role: ${messages[0].role} \n~~~\n${messages[0].content}\n~~~\n`
-    await newPost(SYSTEM_MESSAGE_HEADER + answer, post, typingInterval)
+    await newPost(SYSTEM_MESSAGE_HEADER + answer, post, undefined, undefined)
     throw new TypeError(answer)
   }
   if (messages[1].role !== 'user') {
     // 2つめのmessageがuserと決め打っているので確認failsafe
-    log.error('Invalid message', messages[1])
+    botLog.error('Invalid message', messages[1])
     answer += `Invalid message. Role: ${messages[1].role} \n~~~\n${messages[1].content}\n~~~\n`
-    await newPost(SYSTEM_MESSAGE_HEADER + answer, post, typingInterval)
+    await newPost(SYSTEM_MESSAGE_HEADER + answer, post, undefined, undefined)
     throw new TypeError(answer)
   }
   return answer
 }
+
+/**
+ * Checks if we are responsible to answer to this message.
+ * We do only respond to messages which are posted in a thread or addressed to the bot. We also do not respond to
+ * message which were posted by the bot.
+ * @param msgData The parsed message data
+ * @param meId The mattermost client id
+ * @param previousPosts Older posts in the same channel
+ */
+function isMessageIgnored(msgData: MessageData, meId: string, previousPosts: Post[]): boolean {
+  // we are not in a thread and not mentioned
+  if (msgData.post.root_id === '' && !msgData.mentions.includes(meId)) {
+    return true // スレッドではなく、メンションされていない場合
+  }
+
+  // it is our own message
+  if (msgData.post.user_id === meId) {
+    return true // 自分自身のメッセージの場合
+  }
+
+  for (let i = previousPosts.length - 1; i >= 0; i--) {
+    // we were asked to stop participating in the conversation
+    if (previousPosts[i].props.bot_status === 'stopped') {
+      return true // 会話から退出するように要求された場合
+    }
+
+    if (previousPosts[i].user_id === meId || previousPosts[i].message.includes(name)) {
+      // we are in a thread were we are actively participating, or we were mentioned in the thread => respond
+      return false // アクティブに参加している場合またはスレッドでメンションされている場合は返信する
+    }
+  }
+
+  // we are in a thread but did not participate or got mentioned - we should ignore this message
+  return true // スレッドにいるがメンションされていない場合
+}
+
+/**
+ * Transforms a data object of a WebSocketMessage to a JS Object.
+ * @param msg The WebSocketMessage data.
+ */
+function parseMessageData(msg: JSONMessageData): MessageData {
+  return {
+    mentions: JSON.parse(msg.mentions ?? '[]'),
+    post: JSON.parse(msg.post),
+    sender_name: msg.sender_name,
+  }
+}
+
+/**
+ * Looks up posts which where created in the same thread and within a given timespan before the reference post.
+ * @param refPost The reference post which determines the thread and start point from where older posts are collected.
+ * @param options Additional arguments given as object.
+ * <ul>
+ *     <li><b>lookBackTime</b>: The look back time in milliseconds. Posts which were not created within this time before the
+ *     creation time of the reference posts will not be collected anymore.</li>
+ *     <li><b>postCount</b>: Determines how many of the previous posts should be collected. If this parameter is omitted all posts are returned.</li>
+ * </ul>
+ */
+async function getOlderPosts(refPost: Post, options: { lookBackTime?: number; postCount?: number }) {
+  const thread = await mmClient.getPostThread(refPost.id, true, false, true)
+
+  let posts: Post[] = [...new Set(thread.order)]
+    .map(id => thread.posts[id])
+    .filter(a => !a.message.startsWith(SYSTEM_MESSAGE_HEADER)) //システムメッセージから始まるメッセージの削除
+    .map(post => {
+      //システムメッセージの行の削除
+      post.message = post.message.replace(new RegExp(`^${SYSTEM_MESSAGE_HEADER}.+$`, 'm'), '')
+      return post
+    })
+    .sort((a, b) => a.create_at - b.create_at)
+
+  if (options.lookBackTime && options.lookBackTime > 0) {
+    posts = posts.filter(a => a.create_at > refPost.create_at - options.lookBackTime!)
+  }
+  if (options.postCount && options.postCount > 0) {
+    posts = posts.slice(-options.postCount)
+  }
+
+  return posts
+}
+
+const usernameCache: Record<string, { username: string; expireTime: number }> = {}
+
+/**
+ * Looks up the mattermost username for the given userId. Every username which is looked up will be cached for 5 minutes.
+ * @param userId
+ */
+async function userIdToName(userId: string): Promise<string> {
+  let username: string
+
+  // check if userId is in cache and not outdated
+  if (usernameCache[userId] && Date.now() < usernameCache[userId].expireTime) {
+    username = usernameCache[userId].username
+  } else {
+    // username not in cache our outdated
+    username = (await mmClient.getUser(userId)).username
+
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username)) {
+      username = username.replace(/[.@!?]/g, '_').slice(0, 64)
+    }
+
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username)) {
+      username = [...username.matchAll(/[a-zA-Z0-9_-]/g)].join('').slice(0, 64)
+    }
+
+    usernameCache[userId] = {
+      username: username,
+      expireTime: Date.now() + 1000 * 60 * 5,
+    }
+  }
+
+  return username
+}
+
+/* Entry point */
+async function main(): Promise<void> {
+  const meId = (await mmClient.getMe()).id
+
+  botLog.log('Connected to Mattermost.')
+
+  for (const plugin of plugins) {
+    if (plugin.setup()) {
+      registerChatPlugin(plugin)
+      botLog.trace('Registered plugin ' + plugin.key)
+    }
+  }
+
+  wsClient.addMessageListener(e => onClientMessage(e, meId))
+  botLog.trace('Listening to MM messages...')
+}
+
+main().catch(reason => {
+  botLog.error(reason)
+  process.exit(-1)
+})

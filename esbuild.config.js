@@ -11,11 +11,11 @@ await build({
   platform: 'node',
   format: 'esm',
   packages: 'external',
-  outfile: './out/botservice.mjs'
+  outfile: './dist/botservice.mjs'
 });
 
 const wasmFile = fs.readFileSync(
   './node_modules/tiktoken-node/dist/tiktoken-node.linux-x64-gnu.node'
 );
 
-fs.writeFileSync('./out/tiktoken-node.linux-x64-gnu.node', wasmFile);
+fs.writeFileSync('./dist/tiktoken-node.linux-x64-gnu.node', wasmFile);
