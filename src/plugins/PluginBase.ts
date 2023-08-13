@@ -1,9 +1,9 @@
-import {Log} from "debug-level";
-import {AiResponse, MessageData} from "../types";
+import { AiResponse, MessageData } from '../types.js'
+import { Log } from 'debug-level'
 
 type PluginArgument = {
-    type: string,
-    description: string
+  type: string
+  description: string
 }
 
 /**
@@ -11,23 +11,24 @@ type PluginArgument = {
  * @typeParam T - The type of the argument object which is passed to the runPlugin method.
  */
 export abstract class PluginBase<T> {
-    protected readonly log = new Log('bot')
+  protected readonly log = new Log('bot')
 
-    public constructor(
-        public readonly key: string,
-        public readonly description: string) {}
+  public constructor(
+    public readonly key: string,
+    public readonly description: string,
+  ) {}
 
-    readonly pluginArguments: Record<string, PluginArgument> = {};
-    readonly requiredArguments: string[] = []
+  readonly pluginArguments: Record<string, PluginArgument> = {}
+  readonly requiredArguments: string[] = []
 
-    abstract runPlugin(args: T, msgData: MessageData): Promise<AiResponse>;
-    setup(): boolean {
-        return true
+  abstract runPlugin(args: T, msgData: MessageData): Promise<AiResponse>
+  setup(): boolean {
+    return true
+  }
+  protected addPluginArgument(name: string, type: string, description: string, optional = false) {
+    this.pluginArguments[name] = { type, description }
+    if (!optional) {
+      this.requiredArguments.push(name)
     }
-    protected addPluginArgument(name: string, type: string, description: string, optional = false) {
-        this.pluginArguments[name] = {type, description}
-        if(!optional) {
-            this.requiredArguments.push(name)
-        }
-    }
+  }
 }

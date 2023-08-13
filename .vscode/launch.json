@@ -1,0 +1,56 @@
+{
+    // IntelliSense を使用して利用可能な属性を学べます。
+    // 既存の属性の説明をホバーして表示します。
+    // 詳細情報は次を確認してください: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run npm start by env.debug",
+            "request": "launch",
+            "envFile": "${workspaceFolder}/.env.debug",
+            "command": "npm start",
+            "type": "node-terminal"
+        },
+        {
+            "name": "Run npm start by OpenAI",
+            "request": "launch",
+            "envFile": "${workspaceFolder}/.env.openai",
+            "command": "npm start",
+            "type": "node-terminal"
+        },
+        {
+            "name": "TypeScriptプログラムの起動 via NPM",
+            "request": "launch",
+            "runtimeArgs": [
+                "run",
+                "start"
+            ],
+            "envFile": "${workspaceFolder}/.env.debug",
+            "runtimeExecutable": "npm",
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            "type": "node"
+        },
+        {
+            "name": "Launch Program",
+            "program": "${workspaceFolder}/dist/botservice.mjs",
+            "envFile": "${workspaceFolder}/.env.debug",
+            "request": "launch",
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            "type": "node"
+        },
+        {
+            "name": "tsc output Launch Program",
+            "program": "${workspaceFolder}/out/botservice.js",
+            "envFile": "${workspaceFolder}/.env.debug",
+            "request": "launch",
+            "skipFiles": [
+                "<node_internals>/**"
+            ],
+            "type": "node"
+        }
+    ]
+}

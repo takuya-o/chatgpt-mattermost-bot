@@ -1,9 +1,22 @@
+## Enhanced from the [original yGuy/chatgpt-mattermost-bot](https://github.com/yGuy/chatgpt-mattermost-bot)
+
+* Support Azure OpenAI API
+  + Use the original OpenAI for image generation even when using Azure OpenAI API
+* Build enhancement (The original is now in TypeScript as well by version 2.0.)
+  + Formatted by Prettier
+  + Lint by eslint
+  + Build by esbuild
+  + SWC for debug
+* Token-count-based conversation thread management
+* Splitting message that are too long
+* Support GitLab AutoDevOps by test dummy
+
 # A ChatGPT-powered Chatbot for Mattermost
 
 ![A chat window in Mattermost showing the chat between the OpenAI bot and "yGuy"](./mattermost-chat.png)
 
 The bot can talk to you like a regular mattermost user. It's like having chat.openai.com built collaboratively built into Mattermost!
-But that's not all, you can also use it to generate images via Dall-E or diagram visualizations via a yFiles plugin! 
+But that's not all, you can also use it to generate images via Dall-E or diagram visualizations via a yFiles plugin!
 
 Here's how to get the bot running - it's easy if you have a Docker host.
 
@@ -30,6 +43,11 @@ or when [running the docker image](#using-the-ready-made-docker-image) or when c
 | OPENAI_MODEL_NAME    | no       | `gpt-3.5-turbo`              | The OpenAI language model to use, defaults to `gpt-3.5-turbo`                                                                                                                                      |
 | OPENAI_MAX_TOKENS    | no       | `2000`                       | The maximum number of tokens to pass to the OpenAI API, defaults to 2000                                                                                                                           |
 | OPENAI_TEMPERATURE   | no       | `0.2`                        | The sampling temperature to use, between 0 and 2, defaults to 1. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic. |
+| MAX_PROMPT_TOKENS    | no       | `2096`                       | Maximum number of prompt tokens, default to 2000. For example on GPT-4 = 8196 - OPENAI_MAX_TOKENS.                                                                                                 |
+| AZURE_OPENAI_API_KEY | no       | `0123456789abcdefghijklmno`  | The Azure OpenAI Service API key to authoenticate. If OPENAI_API_KEY is also set, the original OpenAI is used for image generation.                                                                |
+| AZURE_OPENAI_API_INSTANCE_NAME   | no | `example-name`         | The instance name on the Azure OpenAI Service                                                                                                                                                      |
+| AZURE_OPENAI_API_DEPLOYMENT_NAME | no | `gpt-35-turbo`         | The name of the deployed model on the Azure OpenAI Service                                                                                                                                         |
+| AZURE_OPENAI_API_VERSION         | no | `2023-03-15-preview`   | The Azure OpenAI version                                                                                                                                                                           |
 | YFILES_SERVER_URL    | no       | `http://localhost:3835`      | The URL to the yFiles graph service for embedding auto-generated diagrams.                                                                                                                         |
 | NODE_EXTRA_CA_CERTS  | no       | `/file/to/cert.crt`          | a link to a certificate file to pass to node.js for authenticating self-signed certificates                                                                                                        |
 | MATTERMOST_BOTNAME   | no       | `"@chatgpt"`                 | the name of the bot user in Mattermost, defaults to '@chatgpt'                                                                                                                                     |
@@ -56,6 +74,17 @@ docker run -d --restart unless-stopped \
   gitlab.on-o.com/docker/chatgpt-mattermost-bot/release:latest
 ```
 
+As Azure OpenAI Service case
+```bash
+docker run -d --restart unless-stopped \
+  -e MATTERMOST_URL=https://mattermost.server \
+  -e MATTERMOST_TOKEN=abababacdcdcd \
+  -e AZURE_OPENAI_API_KEY=234234234234234234 \
+  -e AZURE_OPENAI_API_INSTANCE_NAME=example-name \
+  --name chatbot \
+  gitlab.on-o.com/docker/chatgpt-mattermost-bot/release:latest
+```
+
 ## Building the Docker image manually
 
 First step is to clone this repo.
@@ -64,7 +93,7 @@ First step is to clone this repo.
 git clone https://github.com/takuya-o/chatgpt-mattermost-bot.git && cd chatgpt-mattermost-bot
 ```
 
-For testing, you could now just run `npm install` and `npm run start` directly, but be sure to set the [environment variables](#options)  or pass them to the node process, first! 
+For testing, you could now just run `npm ci` and `npm run start` or directly, but be sure to set the [environment variables](#options) or pass them to the node process, first!
 
 For production use, in order to create a service on a docker container that will always provide the service without you having to run it on your own machine, you can do the following:
 
@@ -149,7 +178,14 @@ services:
 ```
 
 ### Run the container as a service
-When all configuration is complete, start the container service.
+When all configuration is complete, build and start the container service.
+
+Build docker image:
+```bash
+docker compose build
+```
+
+Start container:
 ```bash
 docker compose up -d
 ```
@@ -175,7 +211,7 @@ Here's an example chat that I just had with our bot:
 >chatgpt (BOT):
 >>Hello there! I'm @chatgpt, a friendly and reliable Mattermost bot designed to make your communication experience smoother and more efficient. I'm honored to be part of the team at yWorks, where I help employees get things done faster and with less hassle. With my advanced machine learning algorithms, I'm capable of understanding complex natural language queries and providing succinct and accurate responses in a matter of seconds. Whether you're a developer looking for information on your codebase or a manager seeking to streamline your team's workflows, I'm here to help. Installing a Mattermost chatbot like me is a must for any organization looking to boost its productivity and enjoy a more pleasant communication experience. So what are you waiting for? Let's chat!
 
-I built this tool as a quick hack on a rainy Saturday afternoon, but we are using the bot in production in our Mattermost instance at our office at [yworks](https://www.yworks.com) and the bot has proved to be very helpful for many simple tasks. Give it a try and provide feedback if you like! It's really not very expensive: We had it running for about 30 users for two weeks and that cost us less than half a dollar for the ChatGPT service! 
+I built this tool as a quick hack on a rainy Saturday afternoon, but we are using the bot in production in our Mattermost instance at our office at [yworks](https://www.yworks.com) and the bot has proved to be very helpful for many simple tasks. Give it a try and provide feedback if you like! It's really not very expensive: We had it running for about 30 users for two weeks and that cost us less than half a dollar for the ChatGPT service!
 
 I will also accept helpful pull requests if you find an issue or have an idea for an improvement.
 

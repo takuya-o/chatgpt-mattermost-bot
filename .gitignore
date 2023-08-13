@@ -3,8 +3,9 @@
 /*.crt
 docker-compose.override.yml
 
-.env
-/.vscode/launch.json
+!.env-sample
+.env*
+# envFileを使えは問題なし /.vscode/launch.json
 /out/
 
 /.npm/
@@ -70,7 +71,8 @@ flycheck_*.el
 .LSOverride
 
 # Icon must end with two \r
-Icon
+Icon
+
 
 # Thumbnails
 ._*

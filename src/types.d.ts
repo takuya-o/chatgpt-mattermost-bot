@@ -1,20 +1,22 @@
-import {Post} from "@mattermost/types/lib/posts";
+import { CreateCompletionResponseUsage } from 'openai'
+import { Post } from '@mattermost/types/lib/posts'
 
 export type JSONMessageData = {
-    mentions?: string,
-    post: string,
-    sender_name: string
+  mentions?: string
+  post: string
+  sender_name: string
 }
 
 export type MessageData = {
-    mentions: string[],
-    post: Post,
-    sender_name: string
+  mentions: string[]
+  post: Post
+  sender_name: string
 }
 
 export type AiResponse = {
-    message: string,
-    props?: Record<string, string>,
-    fileId?: string,
-    intermediate?: boolean
+  message: string
+  usage?: CreateCompletionResponseUsage
+  props?: Record<string, string>
+  fileId?: string
+  intermediate?: boolean
 }

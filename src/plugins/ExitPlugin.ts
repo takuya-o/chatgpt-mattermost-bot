@@ -1,14 +1,13 @@
-import {PluginBase} from "./PluginBase";
-import {AiResponse, MessageData} from "../types";
+import { AiResponse, MessageData } from '../types.js'
+import { PluginBase } from './PluginBase.js'
 
 export class ExitPlugin extends PluginBase<never> {
-    private name = process.env['MATTERMOST_BOTNAME'] || '@chatgpt'
+  private name = process.env['MATTERMOST_BOTNAME'] || '@chatgpt'
 
-    async runPlugin(args: never, msgData: MessageData): Promise<AiResponse> {
-        return {
-            message: "Goodbye! :wave:\n```" + this.name + " left the conversation.```",
-            props: {bot_status: 'stopped'}
-        }
+  async runPlugin(_args: never, _msgData: MessageData): Promise<AiResponse> {
+    return {
+      message: 'Goodbye! :wave:\n```' + this.name + ' left the conversation.```',
+      props: { bot_status: 'stopped' },
     }
-
+  }
 }
