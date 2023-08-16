@@ -17,12 +17,12 @@ import { ImagePlugin } from './plugins/ImagePlugin.js'
 import { MessageCollectPlugin } from './plugins/MessageCollectPlugin.js'
 import { PluginBase } from './plugins/PluginBase.js'
 import { Post } from '@mattermost/types/lib/posts'
-//NoUse import { UserProfile } from '@mattermost/types/lib/users'
 import { WebSocketMessage } from '@mattermost/client'
 import { tokenCount } from './tokenCount.js'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-declare const global: any
+declare const global: {
+  FormData: typeof FormData
+}
 if (!global.FormData) {
   global.FormData = FormData
 }

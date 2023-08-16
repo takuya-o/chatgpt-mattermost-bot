@@ -38,7 +38,7 @@ export class ImagePlugin extends PluginBase<ImagePluginArgs> {
       const imagePrompt = await this.createImagePrompt(args.imageDescription)
       if (imagePrompt) {
         this.log.trace({ imageInputPrompt: args.imageDescription, imageOutputPrompt: imagePrompt })
-        const base64Image = await createImage(imagePrompt)
+        const base64Image = /*this.img256 //*/ /*this.sampleB64String */ await createImage(imagePrompt)
         if (base64Image) {
           const fileId = await this.base64ToFile(base64Image, msgData.post.channel_id)
           aiResponse.message = 'Here is the image you requested: ' + imagePrompt
@@ -75,6 +75,12 @@ export class ImagePlugin extends PluginBase<ImagePluginArgs> {
   async base64ToFile(b64String: string, channelId: string) {
     const form = new FormData()
     form.append('channel_id', channelId)
+    // const bin = atob(b64String)
+    // const buffer = new Uint8Array(bin.length)
+    // for (let i = 0; i < bin.length; i++) {
+    //   buffer[i] = bin.charCodeAt(i)
+    // }
+    // form.append('files', new Blob([buffer], { type: 'image/png' }), 'image.png')
     form.append('files', Buffer.from(b64String, 'base64'), 'image.png')
     const response = await mmClient.uploadFile(form)
     this.log.trace('Uploaded a file with id', response.file_infos[0].id)

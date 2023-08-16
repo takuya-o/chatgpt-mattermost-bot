@@ -1,5 +1,5 @@
 # NPM builder image
-FROM node:16-slim as npm_builder
+FROM node:20-slim as npm_builder
 #20.3.0-bookworm-slim (Debian 12)
 
 WORKDIR /app
@@ -17,7 +17,7 @@ RUN rm -rf node_modules/ && npm ci --omit dev
 
 
 # NPM runtime image
-FROM node:16-slim as npm_runtime
+FROM node:20-slim as npm_runtime
 
 WORKDIR /app
 

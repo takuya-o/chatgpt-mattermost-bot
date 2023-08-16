@@ -159,21 +159,21 @@ async function createImage(prompt) {
 }
 
 // src/mm-client.ts
-import Log2 from "debug-level";
 import { WebSocket } from "ws";
+import fetch from "node-fetch";
 import pkg from "@mattermost/client";
+var { Client4, WebSocketClient } = pkg;
 if (!global.WebSocket) {
   global.WebSocket = WebSocket;
 }
-var { Client4, WebSocketClient } = pkg;
-var log = new Log2("bot");
+global.fetch = fetch;
 var mattermostToken = process.env["MATTERMOST_TOKEN"];
 var matterMostURLString = process.env["MATTERMOST_URL"];
 if (!mattermostToken || !matterMostURLString) {
-  log.error("MATTERMOST_TOKEN or MATTERMOST_URL is undefined");
+  botLog.error("MATTERMOST_TOKEN or MATTERMOST_URL is undefined");
   throw new Error("MATTERMOST_TOKEN or MATTERMOST_URL is undefined");
 }
-log.trace("Configuring Mattermost URL to " + matterMostURLString);
+botLog.trace("Configuring Mattermost URL to " + matterMostURLString);
 var mmClient = new Client4();
 mmClient.setUrl(matterMostURLString);
 mmClient.setToken(mattermostToken);
@@ -188,7 +188,7 @@ new Promise((_resolve, reject) => {
 }).then(() => {
   process.exit(0);
 }).catch((reason) => {
-  log.error(reason);
+  botLog.error(reason);
   process.exit(-1);
 });
 function workaroundWebsocketPackageLostIssue(webSocketClient) {
@@ -204,13 +204,12 @@ workaroundWebsocketPackageLostIssue(wsClient);
 wsClient.initialize(wsUrl.toString(), mattermostToken);
 
 // src/plugins/PluginBase.ts
-import { Log as Log3 } from "debug-level";
 var PluginBase = class {
   constructor(key, description) {
     this.key = key;
     this.description = description;
   }
-  log = new Log3("bot");
+  log = botLog;
   pluginArguments = {};
   requiredArguments = [];
   setup() {
@@ -241,7 +240,7 @@ import FormData3 from "form-data";
 // src/plugins/GraphPlugin.ts
 import { ChatCompletionRequestMessageRoleEnum } from "openai";
 import FormData from "form-data";
-import fetch from "node-fetch";
+import fetch2 from "node-fetch";
 var GraphPlugin = class extends PluginBase {
   yFilesGPTServerUrl = process.env["YFILES_SERVER_URL"];
   yFilesEndpoint = this.yFilesGPTServerUrl ? new URL("/json-to-svg", this.yFilesGPTServerUrl) : void 0;
@@ -311,7 +310,7 @@ ${graphContent}`);
     return result;
   }
   async generateSvg(jsonString) {
-    return fetch(this.yFilesEndpoint, {
+    return fetch2(this.yFilesEndpoint, {
       method: "POST",
       body: jsonString,
       headers: {
@@ -356,7 +355,11 @@ var ImagePlugin = class extends PluginBase {
       const imagePrompt = await this.createImagePrompt(args.imageDescription);
       if (imagePrompt) {
         this.log.trace({ imageInputPrompt: args.imageDescription, imageOutputPrompt: imagePrompt });
-        const base64Image = await createImage(imagePrompt);
+        const base64Image = (
+          /*this.img256 //*/
+          /*this.sampleB64String */
+          await createImage(imagePrompt)
+        );
         if (base64Image) {
           const fileId = await this.base64ToFile(base64Image, msgData.post.channel_id);
           aiResponse.message = "Here is the image you requested: " + imagePrompt;

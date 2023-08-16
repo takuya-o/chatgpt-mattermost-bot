@@ -1,5 +1,5 @@
 import { AiResponse, MessageData } from '../types.js'
-import { Log } from 'debug-level'
+import { botLog } from '../logging.js'
 
 type PluginArgument = {
   type: string
@@ -11,7 +11,7 @@ type PluginArgument = {
  * @typeParam T - The type of the argument object which is passed to the runPlugin method.
  */
 export abstract class PluginBase<T> {
-  protected readonly log = new Log('bot')
+  protected readonly log = botLog
 
   public constructor(
     public readonly key: string,

@@ -1,21 +1,24 @@
-import Log from 'debug-level'
 import { MessageListener } from '@mattermost/client/lib/websocket'
 import { WebSocket } from 'ws'
+import fetch from 'node-fetch'
+import { botLog as log } from './logging.js'
 import pkg from '@mattermost/client'
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-declare const global: any
-if (!global.WebSocket) {
-  global.WebSocket = WebSocket
-}
-//Upstream
-// if(!global.WebSocket) {
-//     global.WebSocket = require('ws')
-// }
 
 // eslint-disable-next-line @typescript-eslint/naming-convention
 const { Client4, WebSocketClient } = pkg
-const log = new Log('bot')
+
+declare const global: {
+  WebSocket: typeof WebSocket
+  fetch: typeof fetch
+}
+if (!global.WebSocket) {
+  global.WebSocket = WebSocket
+}
+// Workaround: Use "node-fetch" instead of "undici" that is being used in Node 18 for "fetch()".
+// The undici not work fine at uploadFile() multipart/form-data on Mattermost JavaScript Driver.
+global.fetch = fetch
+
+//const log = new Log('bot')
 
 const mattermostToken = process.env['MATTERMOST_TOKEN']!
 const matterMostURLString = process.env['MATTERMOST_URL']!
