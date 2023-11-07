@@ -1,6 +1,6 @@
 import { AiResponse, MessageData } from '../types.js'
-import { ChatCompletionRequestMessage, ChatCompletionRequestMessageRoleEnum } from 'openai'
 import FormData from 'form-data'
+import OpenAI from 'openai'
 import { PluginBase } from './PluginBase.js'
 import { createChatCompletion } from '../openai-wrapper.js'
 import fetch from 'node-fetch'
@@ -53,13 +53,13 @@ export class GraphPlugin extends PluginBase<GraphPluginArgs> {
       message: 'Sorry, I could not execute the graph plugin.',
     }
 
-    const chatmessages: ChatCompletionRequestMessage[] = [
+    const chatmessages: OpenAI.Chat.CreateChatCompletionRequestMessage[] = [
       {
-        role: ChatCompletionRequestMessageRoleEnum.System,
+        role: 'system' as const, //ChatCompletionRequestMessageRoleEnum.System,
         content: this.VISUALIZE_DIAGRAM_INSTRUCTIONS,
       },
       {
-        role: ChatCompletionRequestMessageRoleEnum.User,
+        role: 'user' as const, //hatCompletionRequestMessageRoleEnum.User,
         content: args.graphPrompt,
       },
     ]

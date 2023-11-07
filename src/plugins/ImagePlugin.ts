@@ -1,6 +1,5 @@
 import { AiResponse, MessageData } from '../types.js'
 import { createChatCompletion, createImage } from '../openai-wrapper.js'
-import { ChatCompletionRequestMessageRoleEnum } from 'openai'
 import FormData from 'form-data'
 import { PluginBase } from './PluginBase.js'
 import { mmClient } from '../mm-client.js'
@@ -56,14 +55,14 @@ export class ImagePlugin extends PluginBase<ImagePluginArgs> {
     return aiResponse
   }
 
-  async createImagePrompt(userInput: string): Promise<string | undefined> {
+  async createImagePrompt(userInput: string): Promise<string | null | undefined> {
     const messages = [
       {
-        role: ChatCompletionRequestMessageRoleEnum.System,
+        role: 'system' as const, //ChatCompletionRequestMessageRoleEnum.System,
         content: this.GPT_INSTRUCTIONS,
       },
       {
-        role: ChatCompletionRequestMessageRoleEnum.User,
+        role: 'user' as const, //ChatCompletionRequestMessageRoleEnum.User,
         content: userInput,
       },
     ]

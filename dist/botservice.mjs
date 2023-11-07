@@ -1,8 +1,5 @@
 // src/botservice.ts
 import "isomorphic-fetch";
-import {
-  ChatCompletionRequestMessageRoleEnum as ChatCompletionRequestMessageRoleEnum3
-} from "openai";
 
 // src/logging.ts
 import { Log } from "debug-level";
@@ -13,38 +10,31 @@ var openAILog = new Log("open-ai");
 var matterMostLog = new Log("mattermost");
 
 // src/openai-wrapper.ts
-import {
-  ChatCompletionResponseMessageRoleEnum,
-  Configuration,
-  OpenAIApi
-} from "openai";
+import OpenAI from "openai";
 var apiKey = process.env["OPENAI_API_KEY"];
-openAILog.trace({ apiKey });
-var configuration = new Configuration({ apiKey });
+var config = { apiKey };
 var azureOpenAiApiKey = process.env["AZURE_OPENAI_API_KEY"];
 if (azureOpenAiApiKey) {
-  configuration.baseOptions = {
-    headers: { "api-key": azureOpenAiApiKey },
-    params: {
-      "api-version": process.env["AZURE_OPENAI_API_VERSION"] ?? "2023-07-01-preview"
-    }
+  config = {
+    apiKey: azureOpenAiApiKey,
+    baseURL: `https://${process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai/deployments/${process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"] ?? "gpt-35-turbo"}`,
+    defaultQuery: { "api-version": process.env["AZURE_OPENAI_API_VERSION"] ?? "2023-08-01-preview" },
+    defaultHeaders: { "api-key": azureOpenAiApiKey }
   };
-  configuration.basePath = "https://" + process.env["AZURE_OPENAI_API_INSTANCE_NAME"] + ".openai.azure.com/openai/deployments/" + process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"];
 }
-var openai = new OpenAIApi(configuration);
+var openai = new OpenAI(config);
 var openaiImage;
 if (azureOpenAiApiKey) {
-  const configuration2 = new Configuration({ apiKey });
   if (!apiKey) {
-    configuration2.baseOptions = {
-      headers: { "api-key": azureOpenAiApiKey },
-      params: {
-        "api-version": process.env["AZURE_OPENAI_API_VERSION"] ?? "2023-07-01-preview"
-      }
-    };
-    configuration2.basePath = "https://" + process.env["AZURE_OPENAI_API_INSTANCE_NAME"] + ".openai.azure.com/openai";
+    openaiImage = new OpenAI({
+      apiKey: azureOpenAiApiKey,
+      baseURL: `https://${process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai`,
+      defaultQuery: { "api-version": process.env["AZURE_OPENAI_API_VERSION"] ?? "2023-08-01-preview" },
+      defaultHeaders: { "api-key": azureOpenAiApiKey }
+    });
+  } else {
+    openaiImage = new OpenAI({ apiKey });
   }
-  openaiImage = new OpenAIApi(configuration2);
 }
 var model = process.env["OPENAI_MODEL_NAME"] ?? "gpt-3.5-turbo";
 var MAX_TOKENS = Number(process.env["OPENAI_MAX_TOKENS"] ?? 2e3);
@@ -93,7 +83,8 @@ async function continueThread(messages, msgData) {
             openAILog.trace({ pluginResponse });
             if (pluginResponse.intermediate) {
               messages.push({
-                role: ChatCompletionResponseMessageRoleEnum.Function,
+                role: "function",
+                //ChatCompletionResponseMessageRoleEnum.Function,
                 name: pluginName,
                 content: pluginResponse.message
               });
@@ -141,21 +132,25 @@ async function createChatCompletion(messages, functions2 = void 0) {
     chatCompletionOptions.function_call = "auto";
   }
   openAILog.trace({ chatCompletionOptions });
-  const chatCompletion = await openai.createChatCompletion(chatCompletionOptions);
+  const chatCompletion = await openai.chat.completions.create(chatCompletionOptions);
   openAILog.trace({ chatCompletion });
-  return { responseMessage: chatCompletion.data?.choices?.[0]?.message, usage: chatCompletion.data?.usage };
+  return { responseMessage: chatCompletion.choices?.[0]?.message, usage: chatCompletion.usage };
 }
 async function createImage(prompt) {
   const createImageOptions = {
+    model: process.env["OPENAI_IMAGE_MODEL_NAME"] ?? "dall-e-2",
     prompt,
     n: 1,
-    size: "512x512",
+    size: "1024x1024",
+    //Must be one of 256x256, 512x512, or 1024x1024 for dall-e-2. Must be one of 1024x1024, 1792x1024, or 1024x1792 for dall-e-3 models.
+    quality: "standard",
+    //"hd", $0.080/枚=1枚12円で倍額
     response_format: "b64_json"
   };
   openAILog.trace({ createImageOptions });
-  const image = await (openaiImage ? openaiImage : openai).createImage(createImageOptions);
+  const image = await (openaiImage ? openaiImage : openai).images.generate(createImageOptions);
   openAILog.trace({ image });
-  return image.data?.data[0]?.b64_json;
+  return image.data[0]?.b64_json;
 }
 
 // src/mm-client.ts
@@ -238,7 +233,6 @@ var ExitPlugin = class extends PluginBase {
 import FormData3 from "form-data";
 
 // src/plugins/GraphPlugin.ts
-import { ChatCompletionRequestMessageRoleEnum } from "openai";
 import FormData from "form-data";
 import fetch2 from "node-fetch";
 var GraphPlugin = class extends PluginBase {
@@ -263,11 +257,13 @@ var GraphPlugin = class extends PluginBase {
     };
     const chatmessages = [
       {
-        role: ChatCompletionRequestMessageRoleEnum.System,
+        role: "system",
+        //ChatCompletionRequestMessageRoleEnum.System,
         content: this.VISUALIZE_DIAGRAM_INSTRUCTIONS
       },
       {
-        role: ChatCompletionRequestMessageRoleEnum.User,
+        role: "user",
+        //hatCompletionRequestMessageRoleEnum.User,
         content: args.graphPrompt
       }
     ];
@@ -336,7 +332,6 @@ ${graphContent}`);
 };
 
 // src/plugins/ImagePlugin.ts
-import { ChatCompletionRequestMessageRoleEnum as ChatCompletionRequestMessageRoleEnum2 } from "openai";
 import FormData2 from "form-data";
 var ImagePlugin = class extends PluginBase {
   GPT_INSTRUCTIONS = "You are a prompt engineer who helps a user to create good prompts for the image AI DALL-E. The user will provide you with a short image description and you transform this into a proper prompt text. When creating the prompt first describe the looks and structure of the image. Secondly, describe the photography style, like camera angle, camera position, lenses. Third, describe the lighting and specific colors. Your prompt have to focus on the overall image and not describe any details on it. Consider adding buzzwords, for example 'detailed', 'hyper-detailed', 'very realistic', 'sketchy', 'street-art', 'drawing', or similar words. Keep the prompt as simple as possible and never get longer than 400 characters. You may only answer with the resulting prompt and provide no description or explanations.";
@@ -380,11 +375,13 @@ ${args.imageDescription}`);
   async createImagePrompt(userInput) {
     const messages = [
       {
-        role: ChatCompletionRequestMessageRoleEnum2.System,
+        role: "system",
+        //ChatCompletionRequestMessageRoleEnum.System,
         content: this.GPT_INSTRUCTIONS
       },
       {
-        role: ChatCompletionRequestMessageRoleEnum2.User,
+        role: "user",
+        //ChatCompletionRequestMessageRoleEnum.User,
         content: userInput
       }
     ];
@@ -467,6 +464,9 @@ function tokenCount(content) {
 if (!global.FormData) {
   global.FormData = FormData3;
 }
+if (!global.FormData) {
+  global.FormData = FormData3;
+}
 var name = process.env["MATTERMOST_BOTNAME"] || "@chatgpt";
 var contextMsgCount = Number(process.env["BOT_CONTEXT_MSG"] ?? 100);
 var SYSTEM_MESSAGE_HEADER = "// BOT System Message: ";
@@ -490,7 +490,8 @@ async function onClientMessage(msg, meId) {
   }
   const chatmessages = [
     {
-      role: ChatCompletionRequestMessageRoleEnum3.System,
+      role: "system",
+      // ChatCompletionRequestMessageRoleEnum.System,
       content: botInstructions
     }
   ];
@@ -498,13 +499,15 @@ async function onClientMessage(msg, meId) {
     matterMostLog.trace({ msg: threadPost });
     if (threadPost.user_id === meId) {
       chatmessages.push({
-        role: ChatCompletionRequestMessageRoleEnum3.Assistant,
+        role: "assistant",
+        //ChatCompletionRequestMessageRoleEnum.Assistant,
         content: threadPost.props.originalMessage ?? threadPost.message
       });
     } else {
       chatmessages.push({
-        role: ChatCompletionRequestMessageRoleEnum3.User,
-        name: await userIdToName(threadPost.user_id),
+        role: "user",
+        //ChatCompletionRequestMessageRoleEnum.User,
+        //Not have openai V4 name: await userIdToName(threadPost.user_id),
         content: threadPost.message
       });
     }
@@ -540,8 +543,18 @@ async function postMessage(msgData, messages) {
         }
         throw e;
       }
-      const lines = messages[1].content.split("\n");
-      if (lines.length < 1) {
+      let lines = typeof messages[1].content === "string" ? messages[1].content.split("\n") : void 0;
+      if (!lines) {
+        if (messages[1].content) {
+          lines = [];
+          for (let i = 0; messages[1].content.length > i; i++) {
+            if (messages[1].content[i].type === "text") {
+              lines.push(...messages[1].content[i].text.split("\n"));
+            }
+          }
+        }
+      }
+      if (!lines || lines.length < 1) {
         botLog.error("No contents", messages[1].content);
         answer += "No contents.";
         newPost(SYSTEM_MESSAGE_HEADER + answer, msgData.post, void 0, void 0);
@@ -549,12 +562,14 @@ async function postMessage(msgData, messages) {
       }
       const linesCount = [];
       lines.forEach((line, i) => {
-        if (line === "") {
-          lines[i] = "\n";
-          linesCount[i] = 1;
-        } else {
-          lines[i] += "\n";
-          linesCount[i] = tokenCount(lines[i]);
+        if (lines) {
+          if (line === "") {
+            lines[i] = "\n";
+            linesCount[i] = 1;
+          } else {
+            lines[i] += "\n";
+            linesCount[i] = tokenCount(lines[i]);
+          }
         }
       });
       if (messagesCount[0] + linesCount[0] >= LIMIT_TOKENS) {
@@ -574,7 +589,8 @@ async function postMessage(msgData, messages) {
         let systemMessage2 = SYSTEM_MESSAGE_HEADER;
         while (currentMessages.length > 1 && (sumCurrentMessagesCount + currentLinesCount + linesCount[i] >= LIMIT_TOKENS || sumCurrentMessagesCount + currentLinesCount > LIMIT_TOKENS / 2)) {
           botLog.info("Remove assistant message", currentMessages[1]);
-          systemMessage2 += "Forget previous message.\n```\n" + currentMessages[1].content.split("\n").slice(0, 3).join("\n") + "...\n```\n";
+          systemMessage2 += "Forget previous message.\n```\n" + (typeof messages[1].content === "string" ? messages[1].content.split("\n").slice(0, 3).join("\n") : currentMessages[1].content) + // ChatCompletionContentPartの場合は考えられていない TODO: 本当はtextを選んで出すべき
+          "...\n```\n";
           sumCurrentMessagesCount -= currentMessagesCount[1];
           currentMessagesCount = [currentMessagesCount[0], ...currentMessagesCount.slice(2)];
           currentMessages = [currentMessages[0], ...currentMessages.slice(2)];
@@ -653,7 +669,7 @@ function expireMessages(messages, sumMessagesCount, messagesCount, systemMessage
     botLog.info("Remove message", messages[1]);
     systemMessage += `Forget old message.
 ~~~
-${messages[1].content.split("\n").slice(0, 3).join("\n")}
+${typeof messages[1].content === "string" ? messages[1].content.split("\n").slice(0, 3).join("\n") : messages[1].content}
 ...
 ~~~
 `;
@@ -667,7 +683,7 @@ function calcMessagesTokenCount(messages) {
   let sumMessagesCount = 0;
   const messagesCount = new Array(messages.length);
   messages.forEach((message, i) => {
-    messagesCount[i] = tokenCount(message.content);
+    messagesCount[i] = typeof message.content === "string" ? tokenCount(message.content) : 0;
     sumMessagesCount += messagesCount[i];
   });
   return { sumMessagesCount, messagesCount };
@@ -732,26 +748,6 @@ async function getOlderPosts(refPost, options) {
     posts = posts.slice(-options.postCount);
   }
   return posts;
-}
-var usernameCache = {};
-async function userIdToName(userId) {
-  let username;
-  if (usernameCache[userId] && Date.now() < usernameCache[userId].expireTime) {
-    username = usernameCache[userId].username;
-  } else {
-    username = (await mmClient.getUser(userId)).username;
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username)) {
-      username = username.replace(/[.@!?]/g, "_").slice(0, 64);
-    }
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username)) {
-      username = [...username.matchAll(/[a-zA-Z0-9_-]/g)].join("").slice(0, 64);
-    }
-    usernameCache[userId] = {
-      username,
-      expireTime: Date.now() + 1e3 * 60 * 5
-    };
-  }
-  return username;
 }
 async function main() {
   const meId = (await mmClient.getMe()).id;

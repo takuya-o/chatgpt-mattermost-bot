@@ -1,4 +1,4 @@
-import { CreateCompletionResponseUsage } from 'openai'
+import OpenAI from 'openai'
 import { Post } from '@mattermost/types/lib/posts'
 
 export type JSONMessageData = {
@@ -15,7 +15,7 @@ export type MessageData = {
 
 export type AiResponse = {
   message: string
-  usage?: CreateCompletionResponseUsage
+  usage?: OpenAI.CompletionUsage
   props?: Record<string, string>
   fileId?: string
   intermediate?: boolean

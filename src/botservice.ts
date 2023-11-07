@@ -1,9 +1,4 @@
 import 'isomorphic-fetch'
-import {
-  ChatCompletionRequestMessage,
-  ChatCompletionRequestMessageRoleEnum,
-  CreateCompletionResponseUsage,
-} from 'openai'
 import { JSONMessageData, MessageData } from './types.js'
 import { botLog, matterMostLog } from './logging.js'
 import { continueThread, registerChatPlugin } from './openai-wrapper.js'
@@ -15,6 +10,7 @@ import FormData from 'form-data'
 import { GraphPlugin } from './plugins/GraphPlugin.js'
 import { ImagePlugin } from './plugins/ImagePlugin.js'
 import { MessageCollectPlugin } from './plugins/MessageCollectPlugin.js'
+import OpenAI from 'openai'
 import { PluginBase } from './plugins/PluginBase.js'
 import { Post } from '@mattermost/types/lib/posts'
 import { WebSocketMessage } from '@mattermost/client'
@@ -22,6 +18,9 @@ import { tokenCount } from './tokenCount.js'
 
 declare const global: {
   FormData: typeof FormData
+}
+if (!global.FormData) {
+  global.FormData = FormData
 }
 if (!global.FormData) {
   global.FormData = FormData
@@ -66,9 +65,9 @@ async function onClientMessage(msg: WebSocketMessage<JSONMessageData>, meId: str
     return
   }
 
-  const chatmessages: ChatCompletionRequestMessage[] = [
+  const chatmessages: OpenAI.Chat.CreateChatCompletionRequestMessage[] = [
     {
-      role: ChatCompletionRequestMessageRoleEnum.System,
+      role: 'system' as const, // ChatCompletionRequestMessageRoleEnum.System,
       content: botInstructions,
     },
   ]
@@ -78,13 +77,13 @@ async function onClientMessage(msg: WebSocketMessage<JSONMessageData>, meId: str
     matterMostLog.trace({ msg: threadPost })
     if (threadPost.user_id === meId) {
       chatmessages.push({
-        role: ChatCompletionRequestMessageRoleEnum.Assistant,
+        role: 'assistant' as const, //ChatCompletionRequestMessageRoleEnum.Assistant,
         content: threadPost.props.originalMessage ?? threadPost.message,
       })
     } else {
       chatmessages.push({
-        role: ChatCompletionRequestMessageRoleEnum.User,
-        name: await userIdToName(threadPost.user_id),
+        role: 'user' as const, //ChatCompletionRequestMessageRoleEnum.User,
+        //Not have openai V4 name: await userIdToName(threadPost.user_id),
         content: threadPost.message,
       })
     }
@@ -95,7 +94,7 @@ async function onClientMessage(msg: WebSocketMessage<JSONMessageData>, meId: str
 
 //TODO: トークン数でメッセージ分割
 // eslint-disable-next-line max-lines-per-function
-async function postMessage(msgData: MessageData, messages: Array<ChatCompletionRequestMessage>) {
+async function postMessage(msgData: MessageData, messages: Array<OpenAI.Chat.CreateChatCompletionRequestMessage>) {
   // start typing
   const typing = () => wsClient.userTyping(msgData.post.channel_id, (msgData.post.root_id || msgData.post.id) ?? '')
   typing()
@@ -128,8 +127,20 @@ async function postMessage(msgData: MessageData, messages: Array<ChatCompletionR
         }
         throw e
       }
-      const lines = messages[1].content!.split('\n') // 行に分割 //!messave:ChatCompletionRequestMessageがあればcontentはある
-      if (lines.length < 1) {
+      let lines = typeof messages[1].content === 'string' ? messages[1].content.split('\n') : undefined // 行に分割 //!messave:ChatCompletionRequestMessageがあればcontentはある
+      if (!lines) {
+        // 最近は文字列だけでなく ChatCompletionContentPartText | ChatCompletionContentPartImage のときもある。
+        if (messages[1].content) {
+          lines = []
+          for (let i = 0; messages[1].content.length > i; i++) {
+            if ((messages[1].content[i] as OpenAI.Chat.ChatCompletionContentPartText).type === 'text') {
+              lines.push(...(messages[1].content[i] as OpenAI.Chat.ChatCompletionContentPartText).text.split('\n'))
+            }
+            // TODO: image_urlのときは? see:https://github.com/openai/openai-node/blob/2242688f14d5ab7dbf312d92a99fa4a7394907dc/src/resources/chat/completions.ts#L287
+          }
+        }
+      }
+      if (!lines || lines.length < 1) {
         // failsafe
         botLog.error('No contents', messages[1].content)
         answer += 'No contents.'
@@ -139,12 +150,15 @@ async function postMessage(msgData: MessageData, messages: Array<ChatCompletionR
       // 先に行ごとにトークン数も数えておく
       const linesCount: Array<number> = []
       lines.forEach((line: string, i: number) => {
-        if (line === '') {
-          lines[i] = '\n'
-          linesCount[i] = 1 // 空行なら改行分のトークン1に決め打ち
-        } else {
-          lines[i] += '\n'
-          linesCount[i] = tokenCount(lines[i]) //時間かかる 200行で40秒
+        if (lines) {
+          //当たり前だけどlinterが気が付かない
+          if (line === '') {
+            lines[i] = '\n'
+            linesCount[i] = 1 // 空行なら改行分のトークン1に決め打ち
+          } else {
+            lines[i] += '\n'
+            linesCount[i] = tokenCount(lines[i]) //時間かかる 200行で40秒
+          }
         }
       })
       if (messagesCount[0] + linesCount[0] >= LIMIT_TOKENS) {
@@ -172,7 +186,9 @@ async function postMessage(msgData: MessageData, messages: Array<ChatCompletionR
           botLog.info('Remove assistant message', currentMessages[1])
           systemMessage +=
             'Forget previous message.\n```\n' +
-            currentMessages[1].content!.split('\n').slice(0, 3).join('\n') +
+            (typeof messages[1].content === 'string'
+              ? messages[1].content.split('\n').slice(0, 3).join('\n')
+              : currentMessages[1].content) + // ChatCompletionContentPartの場合は考えられていない TODO: 本当はtextを選んで出すべき
             '...\n```\n'
           // 古いassitant messageを取り除く
           sumCurrentMessagesCount -= currentMessagesCount[1]
@@ -231,7 +247,7 @@ async function postMessage(msgData: MessageData, messages: Array<ChatCompletionR
     clearInterval(typingInterval)
   }
 
-  function makeUsageMessage(usage: CreateCompletionResponseUsage | undefined) {
+  function makeUsageMessage(usage: OpenAI.CompletionUsage | undefined) {
     if (!usage) return ''
     return `\n${SYSTEM_MESSAGE_HEADER}Prompt:${usage.prompt_tokens} Completion:${usage.completion_tokens} Total:${usage.total_tokens}`
   }
@@ -253,7 +269,7 @@ async function newPost(
   botLog.trace({ msg: newPost })
 }
 function expireMessages(
-  messages: ChatCompletionRequestMessage[],
+  messages: OpenAI.Chat.CreateChatCompletionRequestMessage[],
   sumMessagesCount: number,
   messagesCount: number[],
   systemMessage: string,
@@ -261,24 +277,28 @@ function expireMessages(
   while (messages.length > 2 && sumMessagesCount >= LIMIT_TOKENS) {
     // system message以外の一番古いメッセージを取り除く
     botLog.info('Remove message', messages[1])
-    systemMessage += `Forget old message.\n~~~\n${messages[1].content!.split('\n').slice(0, 3).join('\n')}\n...\n~~~\n`
+    systemMessage += `Forget old message.\n~~~\n${
+      typeof messages[1].content === 'string'
+        ? messages[1].content.split('\n').slice(0, 3).join('\n')
+        : messages[1].content //TODO: 本当はtextを選んで出すべき
+    }\n...\n~~~\n`
     sumMessagesCount -= messagesCount[1]
     messagesCount = [messagesCount[0], ...messagesCount.slice(2)]
     messages = [messages[0], ...messages.slice(2)] // 最初のmessageをsystemと決め打ち
   }
   return { messages, sumMessagesCount, messagesCount, systemMessage }
 }
-function calcMessagesTokenCount(messages: Array<ChatCompletionRequestMessage>) {
+function calcMessagesTokenCount(messages: Array<OpenAI.Chat.CreateChatCompletionRequestMessage>) {
   let sumMessagesCount = 0
   const messagesCount = new Array<number>(messages.length)
-  messages.forEach((message: ChatCompletionRequestMessage, i) => {
-    messagesCount[i] = tokenCount(message.content)
+  messages.forEach((message: OpenAI.Chat.CreateChatCompletionRequestMessage, i) => {
+    messagesCount[i] = typeof message.content === 'string' ? tokenCount(message.content) : 0 //TODO: 本当はtextを選んでカウントすべき
     sumMessagesCount += messagesCount[i]
   })
   return { sumMessagesCount, messagesCount }
 }
 async function failSafeCheck(
-  messages: Array<ChatCompletionRequestMessage>,
+  messages: Array<OpenAI.Chat.CreateChatCompletionRequestMessage>,
   answer: string,
   post: Post,
 ): Promise<string> {
@@ -379,38 +399,38 @@ async function getOlderPosts(refPost: Post, options: { lookBackTime?: number; po
   return posts
 }
 
-const usernameCache: Record<string, { username: string; expireTime: number }> = {}
+// const usernameCache: Record<string, { username: string; expireTime: number }> = {}
 
-/**
- * Looks up the mattermost username for the given userId. Every username which is looked up will be cached for 5 minutes.
- * @param userId
- */
-async function userIdToName(userId: string): Promise<string> {
-  let username: string
+// /**
+//  * Looks up the mattermost username for the given userId. Every username which is looked up will be cached for 5 minutes.
+//  * @param userId
+//  */
+// async function userIdToName(userId: string): Promise<string> {
+//   let username: string
 
-  // check if userId is in cache and not outdated
-  if (usernameCache[userId] && Date.now() < usernameCache[userId].expireTime) {
-    username = usernameCache[userId].username
-  } else {
-    // username not in cache our outdated
-    username = (await mmClient.getUser(userId)).username
+//   // check if userId is in cache and not outdated
+//   if (usernameCache[userId] && Date.now() < usernameCache[userId].expireTime) {
+//     username = usernameCache[userId].username
+//   } else {
+//     // username not in cache our outdated
+//     username = (await mmClient.getUser(userId)).username
 
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username)) {
-      username = username.replace(/[.@!?]/g, '_').slice(0, 64)
-    }
+//     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username)) {
+//       username = username.replace(/[.@!?]/g, '_').slice(0, 64)
+//     }
 
-    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username)) {
-      username = [...username.matchAll(/[a-zA-Z0-9_-]/g)].join('').slice(0, 64)
-    }
+//     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username)) {
+//       username = [...username.matchAll(/[a-zA-Z0-9_-]/g)].join('').slice(0, 64)
+//     }
 
-    usernameCache[userId] = {
-      username: username,
-      expireTime: Date.now() + 1000 * 60 * 5,
-    }
-  }
+//     usernameCache[userId] = {
+//       username: username,
+//       expireTime: Date.now() + 1000 * 60 * 5,
+//     }
+//   }
 
-  return username
-}
+//   return username
+// }
 
 /* Entry point */
 async function main(): Promise<void> {

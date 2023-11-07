@@ -1,53 +1,44 @@
 import { AiResponse, MessageData } from './types.js'
-import {
-  ChatCompletionFunctions,
-  ChatCompletionRequestMessage,
-  ChatCompletionResponseMessage,
-  ChatCompletionResponseMessageRoleEnum,
-  Configuration,
-  CreateChatCompletionRequest,
-  CreateCompletionResponseUsage,
-  CreateImageRequest,
-  OpenAIApi,
-} from 'openai'
+import OpenAI from 'openai'
 import { PluginBase } from './plugins/PluginBase.js'
 
 import { openAILog as log } from './logging.js'
 
 const apiKey = process.env['OPENAI_API_KEY']
-log.trace({ apiKey })
+// log.trace({ apiKey })
 
-const configuration = new Configuration({ apiKey })
+let config = { apiKey } as {
+  apiKey: string
+  baseURL?: string
+  defaultQuery?: Record<string, string>
+  defaultHeaders?: Record<string, string>
+}
 const azureOpenAiApiKey = process.env['AZURE_OPENAI_API_KEY']
 if (azureOpenAiApiKey) {
-  configuration.baseOptions = {
-    headers: { 'api-key': azureOpenAiApiKey },
-    params: {
-      'api-version': process.env['AZURE_OPENAI_API_VERSION'] ?? '2023-07-01-preview',
-    },
-  }
-  configuration.basePath =
-    'https://' +
-      process.env['AZURE_OPENAI_API_INSTANCE_NAME'] +
-      '.openai.azure.com/openai/deployments/' +
+  config = {
+    apiKey: azureOpenAiApiKey,
+    baseURL: `https://${process.env['AZURE_OPENAI_API_INSTANCE_NAME']}.openai.azure.com/openai/deployments/${
       process.env['AZURE_OPENAI_API_DEPLOYMENT_NAME'] ?? 'gpt-35-turbo'
+    }`,
+    defaultQuery: { 'api-version': process.env['AZURE_OPENAI_API_VERSION'] ?? '2023-08-01-preview' },
+    defaultHeaders: { 'api-key': azureOpenAiApiKey },
+  }
 }
-const openai = new OpenAIApi(configuration)
-let openaiImage: OpenAIApi
+const openai = new OpenAI(config)
+let openaiImage: OpenAI
 if (azureOpenAiApiKey) {
   // イメージ生成 DALL-E用のOpenAI APIは別のを使う
-  const configuration = new Configuration({ apiKey })
   if (!apiKey) {
     // OPENAI_API_KEY が設定されていないのでAzureを使う 動かないけど。
-    configuration.baseOptions = {
-      headers: { 'api-key': azureOpenAiApiKey },
-      params: {
-        'api-version': process.env['AZURE_OPENAI_API_VERSION'] ?? '2023-07-01-preview',
-      },
-    }
-    configuration.basePath = 'https://' + process.env['AZURE_OPENAI_API_INSTANCE_NAME'] + '.openai.azure.com/openai'
+    openaiImage = new OpenAI({
+      apiKey: azureOpenAiApiKey,
+      baseURL: `https://${process.env['AZURE_OPENAI_API_INSTANCE_NAME']}.openai.azure.com/openai`,
+      defaultQuery: { 'api-version': process.env['AZURE_OPENAI_API_VERSION'] ?? '2023-08-01-preview' },
+      defaultHeaders: { 'api-key': azureOpenAiApiKey },
+    })
+  } else {
+    openaiImage = new OpenAI({ apiKey })
   }
-  openaiImage = new OpenAIApi(configuration)
 }
 
 const model = process.env['OPENAI_MODEL_NAME'] ?? 'gpt-3.5-turbo'
@@ -58,7 +49,7 @@ log.debug({ model, max_tokens: MAX_TOKENS, temperature })
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const plugins: Map<string, PluginBase<any>> = new Map()
-const functions: ChatCompletionFunctions[] = []
+const functions: OpenAI.Chat.ChatCompletionCreateParams.Function[] = []
 
 /**
  * Registers a plugin as a GPT function. These functions are sent to openAI when the user interacts with chatGPT.
@@ -86,7 +77,7 @@ export function registerChatPlugin(plugin: PluginBase<any>) {
  */
 // eslint-disable-next-line max-lines-per-function
 export async function continueThread(
-  messages: ChatCompletionRequestMessage[],
+  messages: OpenAI.Chat.CreateChatCompletionRequestMessage[],
   msgData: MessageData,
 ): Promise<AiResponse> {
   let aiResponse: AiResponse = {
@@ -124,7 +115,7 @@ export async function continueThread(
 
             if (pluginResponse.intermediate) {
               messages.push({
-                role: ChatCompletionResponseMessageRoleEnum.Function,
+                role: 'function' as const, //ChatCompletionResponseMessageRoleEnum.Function,
                 name: pluginName,
                 content: pluginResponse.message,
               })
@@ -169,13 +160,13 @@ export async function continueThread(
  * @param functions Function calls which can be called by the openAI model
  */
 export async function createChatCompletion(
-  messages: ChatCompletionRequestMessage[],
-  functions: ChatCompletionFunctions[] | undefined = undefined,
+  messages: OpenAI.Chat.CreateChatCompletionRequestMessage[],
+  functions: OpenAI.Chat.ChatCompletionCreateParams.Function[] | undefined = undefined,
 ): Promise<{
-  responseMessage: ChatCompletionResponseMessage | undefined
-  usage: CreateCompletionResponseUsage | undefined
+  responseMessage: OpenAI.Chat.Completions.ChatCompletionMessage | undefined
+  usage: OpenAI.CompletionUsage | undefined
 }> {
-  const chatCompletionOptions: CreateChatCompletionRequest = {
+  const chatCompletionOptions: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
     model: model,
     messages: messages,
     max_tokens: MAX_TOKENS,
@@ -188,11 +179,11 @@ export async function createChatCompletion(
 
   log.trace({ chatCompletionOptions })
 
-  const chatCompletion = await openai.createChatCompletion(chatCompletionOptions)
+  const chatCompletion = await openai.chat.completions.create(chatCompletionOptions)
 
   log.trace({ chatCompletion })
 
-  return { responseMessage: chatCompletion.data?.choices?.[0]?.message, usage: chatCompletion.data?.usage }
+  return { responseMessage: chatCompletion.choices?.[0]?.message, usage: chatCompletion.usage }
 }
 
 /**
@@ -200,14 +191,16 @@ export async function createChatCompletion(
  * @param prompt The image description provided to DALL-E.
  */
 export async function createImage(prompt: string): Promise<string | undefined> {
-  const createImageOptions: CreateImageRequest = {
+  const createImageOptions: OpenAI.Images.ImageGenerateParams = {
+    model: process.env['OPENAI_IMAGE_MODEL_NAME'] ?? 'dall-e-2',
     prompt,
     n: 1,
-    size: '512x512',
+    size: '1024x1024', //Must be one of 256x256, 512x512, or 1024x1024 for dall-e-2. Must be one of 1024x1024, 1792x1024, or 1024x1792 for dall-e-3 models.
+    quality: 'standard', //"hd", $0.080/枚=1枚12円で倍額
     response_format: 'b64_json',
   }
   log.trace({ createImageOptions })
-  const image = await (openaiImage ? openaiImage : openai).createImage(createImageOptions)
+  const image = await (openaiImage ? openaiImage : openai).images.generate(createImageOptions)
   log.trace({ image })
-  return image.data?.data[0]?.b64_json
+  return image.data[0]?.b64_json
 }
