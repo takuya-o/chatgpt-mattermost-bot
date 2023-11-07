@@ -22,13 +22,6 @@ declare const global: {
 if (!global.FormData) {
   global.FormData = FormData
 }
-if (!global.FormData) {
-  global.FormData = FormData
-}
-// Upstream
-// if (!global.FormData) {
-//     global.FormData = require('form-data')
-// }
 
 const name = process.env['MATTERMOST_BOTNAME'] || '@chatgpt'
 const contextMsgCount = Number(process.env['BOT_CONTEXT_MSG'] ?? 100)

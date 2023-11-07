@@ -464,9 +464,6 @@ function tokenCount(content) {
 if (!global.FormData) {
   global.FormData = FormData3;
 }
-if (!global.FormData) {
-  global.FormData = FormData3;
-}
 var name = process.env["MATTERMOST_BOTNAME"] || "@chatgpt";
 var contextMsgCount = Number(process.env["BOT_CONTEXT_MSG"] ?? 100);
 var SYSTEM_MESSAGE_HEADER = "// BOT System Message: ";
