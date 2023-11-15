@@ -9,159 +9,15 @@ var botLog = new Log("bot");
 var openAILog = new Log("open-ai");
 var matterMostLog = new Log("mattermost");
 
-// src/openai-wrapper.ts
-import OpenAI from "openai";
-var apiKey = process.env["OPENAI_API_KEY"];
-var config = { apiKey };
-var azureOpenAiApiKey = process.env["AZURE_OPENAI_API_KEY"];
-if (azureOpenAiApiKey) {
-  config = {
-    apiKey: azureOpenAiApiKey,
-    baseURL: `https://${process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai/deployments/${process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"] ?? "gpt-35-turbo"}`,
-    defaultQuery: { "api-version": process.env["AZURE_OPENAI_API_VERSION"] ?? "2023-08-01-preview" },
-    defaultHeaders: { "api-key": azureOpenAiApiKey }
-  };
-}
-var openai = new OpenAI(config);
-var openaiImage;
-if (azureOpenAiApiKey) {
-  if (!apiKey) {
-    openaiImage = new OpenAI({
-      apiKey: azureOpenAiApiKey,
-      baseURL: `https://${process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai`,
-      defaultQuery: { "api-version": process.env["AZURE_OPENAI_API_VERSION"] ?? "2023-08-01-preview" },
-      defaultHeaders: { "api-key": azureOpenAiApiKey }
-    });
-  } else {
-    openaiImage = new OpenAI({ apiKey });
-  }
-}
-var model = process.env["OPENAI_MODEL_NAME"] ?? "gpt-3.5-turbo";
-var MAX_TOKENS = Number(process.env["OPENAI_MAX_TOKENS"] ?? 2e3);
-var temperature = Number(process.env["OPENAI_TEMPERATURE"] ?? 1);
-openAILog.debug({ model, max_tokens: MAX_TOKENS, temperature });
-var plugins = /* @__PURE__ */ new Map();
-var functions = [];
-function registerChatPlugin(plugin) {
-  plugins.set(plugin.key, plugin);
-  functions.push({
-    name: plugin.key,
-    description: plugin.description,
-    parameters: {
-      type: "object",
-      properties: plugin.pluginArguments,
-      required: plugin.requiredArguments
-    }
-  });
-}
-async function continueThread(messages, msgData) {
-  let aiResponse = {
-    message: "Sorry, but it seems I found no valid response.",
-    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
-  };
-  let maxChainLength = 7;
-  const missingPlugins = /* @__PURE__ */ new Set();
-  let isIntermediateResponse = true;
-  while (isIntermediateResponse && maxChainLength-- > 0) {
-    const { responseMessage, usage } = await createChatCompletion(messages, functions);
-    openAILog.trace(responseMessage);
-    if (responseMessage) {
-      if (usage && aiResponse.usage) {
-        aiResponse.usage.prompt_tokens += usage.prompt_tokens;
-        aiResponse.usage.completion_tokens += usage.completion_tokens;
-        aiResponse.usage.total_tokens += usage.total_tokens;
-      }
-      if (responseMessage.function_call && responseMessage.function_call.name) {
-        const pluginName = responseMessage.function_call.name;
-        openAILog.trace({ pluginName });
-        try {
-          const plugin = plugins.get(pluginName);
-          if (plugin) {
-            const pluginArguments = JSON.parse(responseMessage.function_call.arguments ?? "[]");
-            openAILog.trace({ plugin, pluginArguments });
-            const pluginResponse = await plugin.runPlugin(pluginArguments, msgData);
-            openAILog.trace({ pluginResponse });
-            if (pluginResponse.intermediate) {
-              messages.push({
-                role: "function",
-                //ChatCompletionResponseMessageRoleEnum.Function,
-                name: pluginName,
-                content: pluginResponse.message
-              });
-              continue;
-            }
-            aiResponse = pluginResponse;
-          } else {
-            if (!missingPlugins.has(pluginName)) {
-              missingPlugins.add(pluginName);
-              openAILog.debug({
-                error: "Missing plugin " + pluginName,
-                pluginArguments: responseMessage.function_call.arguments
-              });
-              messages.push({
-                role: "system",
-                content: `There is no plugin named '${pluginName}' available. Try without using that plugin.`
-              });
-              continue;
-            } else {
-              openAILog.debug({ messages });
-              aiResponse.message = `Sorry, but it seems there was an error when using the plugin \`\`\`${pluginName}\`\`\`.`;
-            }
-          }
-        } catch (e) {
-          openAILog.debug({ messages, error: e });
-          aiResponse.message = `Sorry, but it seems there was an error when using the plugin \`\`\`${pluginName}\`\`\`.`;
-        }
-      } else if (responseMessage.content) {
-        aiResponse.message = responseMessage.content;
-      }
-    }
-    isIntermediateResponse = false;
-  }
-  return aiResponse;
-}
-async function createChatCompletion(messages, functions2 = void 0) {
-  const chatCompletionOptions = {
-    model,
-    messages,
-    max_tokens: MAX_TOKENS,
-    temperature
-  };
-  if (functions2) {
-    chatCompletionOptions.functions = functions2;
-    chatCompletionOptions.function_call = "auto";
-  }
-  openAILog.trace({ chatCompletionOptions });
-  const chatCompletion = await openai.chat.completions.create(chatCompletionOptions);
-  openAILog.trace({ chatCompletion });
-  return { responseMessage: chatCompletion.choices?.[0]?.message, usage: chatCompletion.usage };
-}
-async function createImage(prompt) {
-  const createImageOptions = {
-    model: process.env["OPENAI_IMAGE_MODEL_NAME"] ?? "dall-e-2",
-    prompt,
-    n: 1,
-    size: "1024x1024",
-    //Must be one of 256x256, 512x512, or 1024x1024 for dall-e-2. Must be one of 1024x1024, 1792x1024, or 1024x1792 for dall-e-3 models.
-    quality: "standard",
-    //"hd", $0.080/枚=1枚12円で倍額
-    response_format: "b64_json"
-  };
-  openAILog.trace({ createImageOptions });
-  const image = await (openaiImage ? openaiImage : openai).images.generate(createImageOptions);
-  openAILog.trace({ image });
-  return image.data[0]?.b64_json;
-}
-
 // src/mm-client.ts
 import { WebSocket } from "ws";
-import fetch from "node-fetch";
+import fetch2 from "node-fetch";
 import pkg from "@mattermost/client";
 var { Client4, WebSocketClient } = pkg;
 if (!global.WebSocket) {
   global.WebSocket = WebSocket;
 }
-global.fetch = fetch;
+global.fetch = fetch2;
 var mattermostToken = process.env["MATTERMOST_TOKEN"];
 var matterMostURLString = process.env["MATTERMOST_URL"];
 if (!mattermostToken || !matterMostURLString) {
@@ -234,7 +90,184 @@ import FormData3 from "form-data";
 
 // src/plugins/GraphPlugin.ts
 import FormData from "form-data";
-import fetch2 from "node-fetch";
+
+// src/openai-wrapper.ts
+import OpenAI from "openai";
+var apiKey = process.env["OPENAI_API_KEY"];
+var config = { apiKey };
+var azureOpenAiApiKey = process.env["AZURE_OPENAI_API_KEY"];
+if (azureOpenAiApiKey) {
+  config = {
+    apiKey: azureOpenAiApiKey,
+    baseURL: `https://${process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai/deployments/${process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"] ?? "gpt-35-turbo"}`,
+    defaultQuery: { "api-version": process.env["AZURE_OPENAI_API_VERSION"] ?? "2023-08-01-preview" },
+    defaultHeaders: { "api-key": azureOpenAiApiKey }
+  };
+}
+var openai = new OpenAI(config);
+var openaiImage;
+if (azureOpenAiApiKey) {
+  if (!apiKey) {
+    openaiImage = new OpenAI({
+      apiKey: azureOpenAiApiKey,
+      baseURL: `https://${process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai`,
+      defaultQuery: { "api-version": process.env["AZURE_OPENAI_API_VERSION"] ?? "2023-08-01-preview" },
+      defaultHeaders: { "api-key": azureOpenAiApiKey }
+    });
+  } else {
+    openaiImage = new OpenAI({ apiKey });
+  }
+}
+var model = process.env["OPENAI_MODEL_NAME"] ?? "gpt-3.5-turbo";
+var MAX_TOKENS = Number(process.env["OPENAI_MAX_TOKENS"] ?? 2e3);
+var temperature = Number(process.env["OPENAI_TEMPERATURE"] ?? 1);
+openAILog.debug({ model, max_tokens: MAX_TOKENS, temperature });
+var plugins = /* @__PURE__ */ new Map();
+var functions = [];
+function registerChatPlugin(plugin) {
+  plugins.set(plugin.key, plugin);
+  functions.push({
+    name: plugin.key,
+    description: plugin.description,
+    parameters: {
+      type: "object",
+      properties: plugin.pluginArguments,
+      required: plugin.requiredArguments
+    }
+  });
+}
+async function continueThread(messages, msgData) {
+  let aiResponse = {
+    message: "Sorry, but it seems I found no valid response.",
+    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    model: ""
+  };
+  let maxChainLength = 7;
+  const missingPlugins = /* @__PURE__ */ new Set();
+  let isIntermediateResponse = true;
+  while (isIntermediateResponse && maxChainLength-- > 0) {
+    const { responseMessage, usage, model: model2 } = await createChatCompletion(messages, functions);
+    openAILog.trace(responseMessage);
+    if (responseMessage) {
+      aiResponse.model += model2 + " ";
+      if (usage && aiResponse.usage) {
+        aiResponse.usage.prompt_tokens += usage.prompt_tokens;
+        aiResponse.usage.completion_tokens += usage.completion_tokens;
+        aiResponse.usage.total_tokens += usage.total_tokens;
+      }
+      if (responseMessage.function_call && responseMessage.function_call.name) {
+        const pluginName = responseMessage.function_call.name;
+        openAILog.trace({ pluginName });
+        try {
+          const plugin = plugins.get(pluginName);
+          if (plugin) {
+            aiResponse.model += pluginName + " ";
+            const pluginArguments = JSON.parse(responseMessage.function_call.arguments ?? "[]");
+            openAILog.trace({ plugin, pluginArguments });
+            const pluginResponse = await plugin.runPlugin(pluginArguments, msgData);
+            openAILog.trace({ pluginResponse });
+            if (pluginResponse.intermediate) {
+              messages.push({
+                role: "function",
+                //ChatCompletionResponseMessageRoleEnum.Function,
+                name: pluginName,
+                content: pluginResponse.message
+              });
+              continue;
+            }
+            pluginResponse.model = aiResponse.model;
+            pluginResponse.usage = aiResponse.usage;
+            aiResponse = pluginResponse;
+          } else {
+            if (!missingPlugins.has(pluginName)) {
+              missingPlugins.add(pluginName);
+              openAILog.debug({
+                error: "Missing plugin " + pluginName,
+                pluginArguments: responseMessage.function_call.arguments
+              });
+              messages.push({
+                role: "system",
+                content: `There is no plugin named '${pluginName}' available. Try without using that plugin.`
+              });
+              continue;
+            } else {
+              openAILog.debug({ messages });
+              aiResponse.message = `Sorry, but it seems there was an error when using the plugin \`\`\`${pluginName}\`\`\`.`;
+            }
+          }
+        } catch (e) {
+          openAILog.debug({ messages, error: e });
+          aiResponse.message = `Sorry, but it seems there was an error when using the plugin \`\`\`${pluginName}\`\`\`.`;
+        }
+      } else if (responseMessage.content) {
+        aiResponse.message = responseMessage.content;
+      }
+    }
+    isIntermediateResponse = false;
+  }
+  return aiResponse;
+}
+async function createChatCompletion(messages, functions2 = void 0) {
+  let tools = false;
+  let currentOpenAi = openai;
+  let currentModel = model;
+  const visionModel = process.env["OPENAI_VISION_MODEL_NAME"];
+  if (visionModel) {
+    messages.some((message) => {
+      if (typeof message.content !== "string") {
+        tools = true;
+        if (openaiImage) {
+          currentOpenAi = openaiImage;
+        }
+        currentModel = visionModel;
+        return true;
+      }
+    });
+  }
+  const chatCompletionOptions = {
+    model: currentModel,
+    messages,
+    max_tokens: MAX_TOKENS,
+    //TODO: messageのTOKEN数から最大値にする。レスポンス長くなるけど翻訳などが一発になる
+    temperature
+  };
+  if (functions2) {
+    if (tools) {
+    } else {
+      chatCompletionOptions.functions = functions2;
+      chatCompletionOptions.function_call = "auto";
+    }
+  }
+  openAILog.trace(
+    chatCompletionOptions.model,
+    chatCompletionOptions.max_tokens,
+    chatCompletionOptions.temperature,
+    chatCompletionOptions.functions,
+    chatCompletionOptions.function_call
+  );
+  const chatCompletion = await currentOpenAi.chat.completions.create(chatCompletionOptions);
+  openAILog.trace({ chatCompletion });
+  return { responseMessage: chatCompletion.choices?.[0]?.message, usage: chatCompletion.usage, model: currentModel };
+}
+async function createImage(prompt) {
+  const createImageOptions = {
+    model: process.env["OPENAI_IMAGE_MODEL_NAME"] ?? "dall-e-2",
+    prompt,
+    n: 1,
+    size: "1024x1024",
+    //Must be one of 256x256, 512x512, or 1024x1024 for dall-e-2. Must be one of 1024x1024, 1792x1024, or 1024x1792 for dall-e-3 models.
+    quality: "standard",
+    //"hd", $0.080/枚=1枚12円で倍額
+    response_format: "b64_json"
+  };
+  openAILog.trace({ createImageOptions });
+  const image = await (openaiImage ? openaiImage : openai).images.generate(createImageOptions);
+  openAILog.trace({ image });
+  return image.data[0]?.b64_json;
+}
+
+// src/plugins/GraphPlugin.ts
+import fetch3 from "node-fetch";
 var GraphPlugin = class extends PluginBase {
   yFilesGPTServerUrl = process.env["YFILES_SERVER_URL"];
   yFilesEndpoint = this.yFilesGPTServerUrl ? new URL("/json-to-svg", this.yFilesGPTServerUrl) : void 0;
@@ -306,7 +339,7 @@ ${graphContent}`);
     return result;
   }
   async generateSvg(jsonString) {
-    return fetch2(this.yFilesEndpoint, {
+    return fetch3(this.yFilesEndpoint, {
       method: "POST",
       body: jsonString,
       headers: {
@@ -460,57 +493,7 @@ function tokenCount(content) {
   return tokens.length;
 }
 
-// src/botservice.ts
-if (!global.FormData) {
-  global.FormData = FormData3;
-}
-var name = process.env["MATTERMOST_BOTNAME"] || "@chatgpt";
-var contextMsgCount = Number(process.env["BOT_CONTEXT_MSG"] ?? 100);
-var SYSTEM_MESSAGE_HEADER = "// BOT System Message: ";
-var LIMIT_TOKENS = Number(process.env["MAX_PROMPT_TOKENS"] ?? 2e3);
-var plugins2 = [
-  new GraphPlugin("graph-plugin", "Generate a graph based on a given description or topic"),
-  new ImagePlugin("image-plugin", "Generates an image based on a given image description."),
-  new ExitPlugin("exit-plugin", "Says goodbye to the user and wish him a good day."),
-  new MessageCollectPlugin("message-collect-plugin", "Collects messages in the thread for a specific user or time")
-];
-var botInstructions = "Your name is " + name + " and you are a helpful assistant. Whenever users asks you for help you will provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the meta data of the messages.";
-async function onClientMessage(msg, meId) {
-  if (msg.event !== "posted" || !meId) {
-    matterMostLog.debug({ msg });
-    return;
-  }
-  const msgData = parseMessageData(msg.data);
-  const posts = await getOlderPosts(msgData.post, { lookBackTime: 1e3 * 60 * 60 * 24 * 7 });
-  if (isMessageIgnored(msgData, meId, posts)) {
-    return;
-  }
-  const chatmessages = [
-    {
-      role: "system",
-      // ChatCompletionRequestMessageRoleEnum.System,
-      content: botInstructions
-    }
-  ];
-  for (const threadPost of posts.slice(-contextMsgCount)) {
-    matterMostLog.trace({ msg: threadPost });
-    if (threadPost.user_id === meId) {
-      chatmessages.push({
-        role: "assistant",
-        //ChatCompletionRequestMessageRoleEnum.Assistant,
-        content: threadPost.props.originalMessage ?? threadPost.message
-      });
-    } else {
-      chatmessages.push({
-        role: "user",
-        //ChatCompletionRequestMessageRoleEnum.User,
-        //Not have openai V4 name: await userIdToName(threadPost.user_id),
-        content: threadPost.message
-      });
-    }
-  }
-  await postMessage(msgData, chatmessages);
-}
+// src/postMessage.ts
 async function postMessage(msgData, messages) {
   const typing = () => wsClient.userTyping(msgData.post.channel_id, (msgData.post.root_id || msgData.post.id) ?? "");
   typing();
@@ -532,18 +515,19 @@ async function postMessage(msgData, messages) {
     if (sumMessagesCount >= LIMIT_TOKENS) {
       botLog.info("Too long user message", sumMessagesCount, LIMIT_TOKENS);
       try {
-        answer = await failSafeCheck(messages, answer, msgData.post);
+        answer = await failSafeCheck(messages, answer);
       } catch (e) {
         if (e instanceof TypeError) {
-          newPost(e.message, msgData.post, void 0, void 0);
+          newPost(SYSTEM_MESSAGE_HEADER + e.message, msgData.post, void 0, void 0);
           return;
         }
         throw e;
       }
-      let lines = typeof messages[1].content === "string" ? messages[1].content.split("\n") : void 0;
-      if (!lines) {
+      let lines = [];
+      if (typeof messages[1].content === "string") {
+        lines = messages[1].content.split("\n");
+      } else {
         if (messages[1].content) {
-          lines = [];
           for (let i = 0; messages[1].content.length > i; i++) {
             if (messages[1].content[i].type === "text") {
               lines.push(...messages[1].content[i].text.split("\n"));
@@ -551,7 +535,7 @@ async function postMessage(msgData, messages) {
           }
         }
       }
-      if (!lines || lines.length < 1) {
+      if (lines.length < 1) {
         botLog.error("No contents", messages[1].content);
         answer += "No contents.";
         newPost(SYSTEM_MESSAGE_HEADER + answer, msgData.post, void 0, void 0);
@@ -586,8 +570,7 @@ async function postMessage(msgData, messages) {
         let systemMessage2 = SYSTEM_MESSAGE_HEADER;
         while (currentMessages.length > 1 && (sumCurrentMessagesCount + currentLinesCount + linesCount[i] >= LIMIT_TOKENS || sumCurrentMessagesCount + currentLinesCount > LIMIT_TOKENS / 2)) {
           botLog.info("Remove assistant message", currentMessages[1]);
-          systemMessage2 += "Forget previous message.\n```\n" + (typeof messages[1].content === "string" ? messages[1].content.split("\n").slice(0, 3).join("\n") : currentMessages[1].content) + // ChatCompletionContentPartの場合は考えられていない TODO: 本当はtextを選んで出すべき
-          "...\n```\n";
+          systemMessage2 += mkMessageContentString(messages, "Forget previous message.");
           sumCurrentMessagesCount -= currentMessagesCount[1];
           currentMessagesCount = [currentMessagesCount[0], ...currentMessagesCount.slice(2)];
           currentMessages = [currentMessages[0], ...currentMessages.slice(2)];
@@ -610,10 +593,10 @@ ${lines[i]}~~~
         }
         botLog.debug(`line done i=${i} currentLinesCount=${currentLinesCount} currentLines=${currentLines}`);
         currentMessages.push({ role: "user", content: currentLines });
-        const { message: completion, usage, fileId, props } = await continueThread(currentMessages, msgData);
+        const { message: completion, usage, fileId, props, model: model2 } = await continueThread(currentMessages, msgData);
         answer += `*** No.${++partNo} ***
 ${completion}`;
-        answer += makeUsageMessage(usage);
+        answer += makeUsageMessage(usage, model2);
         botLog.debug("answer=" + answer);
         await newPost(answer, msgData.post, fileId, props);
         answer = "";
@@ -626,9 +609,9 @@ ${completion}`;
         botLog.debug("length=" + currentMessages.length);
       }
     } else {
-      const { message: completion, usage, fileId, props } = await continueThread(messages, msgData);
+      const { message: completion, usage, fileId, props, model: model2 } = await continueThread(messages, msgData);
       answer += completion;
-      answer += makeUsageMessage(usage);
+      answer += makeUsageMessage(usage, model2);
       await newPost(answer, msgData.post, fileId, props);
       botLog.debug("answer=" + answer);
     }
@@ -643,11 +626,18 @@ Error: ${e.message}`;
   } finally {
     clearInterval(typingInterval);
   }
-  function makeUsageMessage(usage) {
-    if (!usage)
+  function makeUsageMessage(usage, model2 = "") {
+    if (!usage && !model2)
       return "";
-    return `
-${SYSTEM_MESSAGE_HEADER}Prompt:${usage.prompt_tokens} Completion:${usage.completion_tokens} Total:${usage.total_tokens}`;
+    let message = `
+${SYSTEM_MESSAGE_HEADER} `;
+    if (usage) {
+      message += ` Prompt:${usage.prompt_tokens} Completion:${usage.completion_tokens} Total:${usage.total_tokens}`;
+    }
+    if (model2) {
+      message += ` Model:${model2}`;
+    }
+    return message;
   }
 }
 async function newPost(answer, post, fileId, props) {
@@ -661,59 +651,170 @@ async function newPost(answer, post, fileId, props) {
   });
   botLog.trace({ msg: newPost2 });
 }
+function calcMessagesTokenCount(messages) {
+  let sumMessagesCount = 0;
+  const messagesCount = new Array(messages.length);
+  messages.forEach((message, i) => {
+    if (typeof message.content === "string" && message.content.length > 0) {
+      messagesCount[i] = tokenCount(message.content);
+    } else if (typeof message.content === "object" && message.content) {
+      message.content.forEach((content) => {
+        if (content.type === "text") {
+          messagesCount[i] += tokenCount(content.text);
+        }
+      });
+    }
+    sumMessagesCount += messagesCount[i];
+  });
+  return { sumMessagesCount, messagesCount };
+}
+async function failSafeCheck(messages, answer) {
+  if (messages[0].role !== "system") {
+    await throwTypeError(messages[0]);
+  }
+  if (messages[1].role !== "user") {
+    await throwTypeError(messages[1]);
+  }
+  return answer;
+  async function throwTypeError(message) {
+    botLog.error("Invalid message", message);
+    answer += mkMessageContentString(messages, `Invalid message. Role: ${message.role}`);
+    throw new TypeError(answer);
+  }
+}
 function expireMessages(messages, sumMessagesCount, messagesCount, systemMessage) {
   while (messages.length > 2 && sumMessagesCount >= LIMIT_TOKENS) {
     botLog.info("Remove message", messages[1]);
-    systemMessage += `Forget old message.
-~~~
-${typeof messages[1].content === "string" ? messages[1].content.split("\n").slice(0, 3).join("\n") : messages[1].content}
-...
-~~~
-`;
+    systemMessage += mkMessageContentString(messages, "Forget old message.");
     sumMessagesCount -= messagesCount[1];
     messagesCount = [messagesCount[0], ...messagesCount.slice(2)];
     messages = [messages[0], ...messages.slice(2)];
   }
   return { messages, sumMessagesCount, messagesCount, systemMessage };
 }
-function calcMessagesTokenCount(messages) {
-  let sumMessagesCount = 0;
-  const messagesCount = new Array(messages.length);
-  messages.forEach((message, i) => {
-    messagesCount[i] = typeof message.content === "string" ? tokenCount(message.content) : 0;
-    sumMessagesCount += messagesCount[i];
+function mkMessageContentString(messages, description) {
+  return `${description}
+~~~
+${(typeof messages[1].content === "string" ? messages[1].content : messages[1].content?.[0]?.type === "text" ? messages[1].content[0].text : "").split("\n").slice(0, 3).join("\n")}
+...
+~~~
+`;
+}
+
+// src/botservice.ts
+if (!global.FormData) {
+  global.FormData = FormData3;
+}
+var name = process.env["MATTERMOST_BOTNAME"] || "@chatgpt";
+var contextMsgCount = Number(process.env["BOT_CONTEXT_MSG"] ?? 100);
+var SYSTEM_MESSAGE_HEADER = "// BOT System Message: ";
+var LIMIT_TOKENS = Number(process.env["MAX_PROMPT_TOKENS"] ?? 2e3);
+var plugins2 = [
+  new GraphPlugin("graph-plugin", "Generate a graph based on a given description or topic"),
+  new ImagePlugin("image-plugin", "Generates an image based on a given image description."),
+  new ExitPlugin("exit-plugin", "Says goodbye to the user and wish him a good day."),
+  new MessageCollectPlugin("message-collect-plugin", "Collects messages in the thread for a specific user or time")
+];
+var botInstructions = "Your name is " + name + " and you are a helpful assistant. Whenever users asks you for help you will provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the meta data of the messages.";
+async function onClientMessage(msg, meId) {
+  if (msg.event !== "posted" && msg.event !== "post_edited" || !meId) {
+    matterMostLog.debug("Event not posted ", msg.event, { msg });
+    return;
+  }
+  const msgData = parseMessageData(msg.data);
+  const posts = await getOlderPosts(msgData.post, {
+    lookBackTime: 1e3 * 60 * 60 * 24 * 7,
+    postCount: contextMsgCount
   });
-  return { sumMessagesCount, messagesCount };
+  if (await isMessageIgnored(msgData, meId, posts)) {
+    return;
+  }
+  botLog.trace({ threadPosts: posts });
+  const chatmessages = [
+    {
+      role: "system",
+      // ChatCompletionRequestMessageRoleEnum.System,
+      content: botInstructions
+    }
+  ];
+  await appendThreadPosts(posts, meId, chatmessages);
+  await postMessage(msgData, chatmessages);
 }
-async function failSafeCheck(messages, answer, post) {
-  if (messages[0].role !== "system") {
-    botLog.error("Invalid message", messages[0]);
-    answer += `Invalid message. Role: ${messages[0].role} 
-~~~
-${messages[0].content}
-~~~
-`;
-    await newPost(SYSTEM_MESSAGE_HEADER + answer, post, void 0, void 0);
-    throw new TypeError(answer);
+async function appendThreadPosts(posts, meId, chatmessages) {
+  for (const threadPost of posts) {
+    matterMostLog.trace({ msg: threadPost });
+    if (threadPost.user_id === meId) {
+      chatmessages.push({
+        role: "assistant",
+        name: await userIdToName(threadPost.user_id),
+        content: threadPost.props.originalMessage ?? threadPost.message
+      });
+    } else {
+      if (threadPost.metadata.files?.length > 0 || threadPost.metadata.images) {
+        const content = [{ type: "text", text: threadPost.message }];
+        await Promise.all(
+          threadPost.metadata.files.map(async (file) => {
+            const originalUrl = await mmClient.getFileUrl(file.id, NaN);
+            const url = await getBase64Image(originalUrl);
+            if (url) {
+              content.push(
+                { type: "image_url", image_url: { url } }
+                //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
+              );
+            }
+          })
+        );
+        if (threadPost.metadata.images) {
+          Object.keys(threadPost.metadata.images).forEach((url) => {
+            content.push({ type: "image_url", image_url: { url } });
+          });
+        }
+        chatmessages.push({
+          role: "user",
+          name: await userIdToName(threadPost.user_id),
+          content
+        });
+      } else {
+        chatmessages.push({
+          role: "user",
+          name: await userIdToName(threadPost.user_id),
+          content: threadPost.message
+        });
+      }
+    }
   }
-  if (messages[1].role !== "user") {
-    botLog.error("Invalid message", messages[1]);
-    answer += `Invalid message. Role: ${messages[1].role} 
-~~~
-${messages[1].content}
-~~~
-`;
-    await newPost(SYSTEM_MESSAGE_HEADER + answer, post, void 0, void 0);
-    throw new TypeError(answer);
-  }
-  return answer;
 }
-function isMessageIgnored(msgData, meId, previousPosts) {
-  if (msgData.post.root_id === "" && !msgData.mentions.includes(meId)) {
-    return true;
+async function getBase64Image(url) {
+  const token = mmClient.getToken();
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`
+      // Add the Authentication header here
+    }
+  });
+  if (!response.ok) {
+    matterMostLog.error(`Fech Image URL HTTP error! status: ${response.status}`);
+    return "";
   }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  const mimeType = response.headers.get("content-type");
+  const base64 = buffer.toString("base64");
+  const dataURL = "data:" + mimeType + ";base64," + base64;
+  return dataURL;
+}
+async function isMessageIgnored(msgData, meId, previousPosts) {
   if (msgData.post.user_id === meId) {
     return true;
+  }
+  const channelId = msgData.post.channel_id;
+  const channel = await mmClient.getChannel(channelId);
+  const members = await mmClient.getChannelMembers(channelId);
+  if (channel.type === "D" && members.length === 2 && members.find((member) => member.user_id === meId)) {
+    return false;
+  } else {
+    if (msgData.post.root_id === "" && !msgData.mentions.includes(meId)) {
+      return true;
+    }
   }
   for (let i = previousPosts.length - 1; i >= 0; i--) {
     if (previousPosts[i].props.bot_status === "stopped") {
@@ -733,7 +834,13 @@ function parseMessageData(msg) {
   };
 }
 async function getOlderPosts(refPost, options) {
-  const thread = await mmClient.getPostThread(refPost.id, true, false, true);
+  const thread = await mmClient.getPostThread(
+    refPost.id,
+    true,
+    false,
+    true
+    /*関連するユーザを取得*/
+  );
   let posts = [...new Set(thread.order)].map((id) => thread.posts[id]).filter((a) => !a.message.startsWith(SYSTEM_MESSAGE_HEADER)).map((post) => {
     post.message = post.message.replace(new RegExp(`^${SYSTEM_MESSAGE_HEADER}.+$`, "m"), "");
     return post;
@@ -745,6 +852,26 @@ async function getOlderPosts(refPost, options) {
     posts = posts.slice(-options.postCount);
   }
   return posts;
+}
+var usernameCache = {};
+async function userIdToName(userId) {
+  let username;
+  if (usernameCache[userId] && Date.now() < usernameCache[userId].expireTime) {
+    username = usernameCache[userId].username;
+  } else {
+    username = (await mmClient.getUser(userId)).username;
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username)) {
+      username = username.replace(/[.@!?]/g, "_").slice(0, 64);
+    }
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username)) {
+      username = [...username.matchAll(/[a-zA-Z0-9_-]/g)].join("").slice(0, 64);
+    }
+    usernameCache[userId] = {
+      username,
+      expireTime: Date.now() + 1e3 * 60 * 5
+    };
+  }
+  return username;
 }
 async function main() {
   const meId = (await mmClient.getMe()).id;
@@ -762,3 +889,7 @@ main().catch((reason) => {
   botLog.error(reason);
   process.exit(-1);
 });
+export {
+  LIMIT_TOKENS,
+  SYSTEM_MESSAGE_HEADER
+};

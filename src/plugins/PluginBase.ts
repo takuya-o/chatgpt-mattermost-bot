@@ -1,4 +1,4 @@
-import { AiResponse, MessageData } from '../types.js'
+import { AiResponse, MattermostMessageData } from '../types.js'
 import { botLog } from '../logging.js'
 
 type PluginArgument = {
@@ -21,7 +21,7 @@ export abstract class PluginBase<T> {
   readonly pluginArguments: Record<string, PluginArgument> = {}
   readonly requiredArguments: string[] = []
 
-  abstract runPlugin(args: T, msgData: MessageData): Promise<AiResponse>
+  abstract runPlugin(args: T, msgData: MattermostMessageData): Promise<AiResponse>
   setup(): boolean {
     return true
   }

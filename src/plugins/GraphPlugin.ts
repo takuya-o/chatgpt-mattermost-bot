@@ -1,4 +1,4 @@
-import { AiResponse, MessageData } from '../types.js'
+import { AiResponse, MattermostMessageData } from '../types.js'
 import FormData from 'form-data'
 import OpenAI from 'openai'
 import { PluginBase } from './PluginBase.js'
@@ -48,7 +48,7 @@ export class GraphPlugin extends PluginBase<GraphPluginArgs> {
   }
 
   /* Plugin entry point */
-  async runPlugin(args: GraphPluginArgs, msgData: MessageData): Promise<AiResponse> {
+  async runPlugin(args: GraphPluginArgs, msgData: MattermostMessageData): Promise<AiResponse> {
     const aiResponse = {
       message: 'Sorry, I could not execute the graph plugin.',
     }

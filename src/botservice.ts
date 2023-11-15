@@ -1,7 +1,6 @@
 import 'isomorphic-fetch'
-import { JSONMessageData, MessageData } from './types.js'
+import { JSONMessageData, MattermostMessageData } from './types.js'
 import { botLog, matterMostLog } from './logging.js'
-import { continueThread, registerChatPlugin } from './openai-wrapper.js'
 import { mmClient, wsClient } from './mm-client.js'
 import { ExitPlugin } from './plugins/ExitPlugin.js'
 // the mattermost library uses FormData - so here is a polyfill
@@ -14,7 +13,8 @@ import OpenAI from 'openai'
 import { PluginBase } from './plugins/PluginBase.js'
 import { Post } from '@mattermost/types/lib/posts'
 import { WebSocketMessage } from '@mattermost/client'
-import { tokenCount } from './tokenCount.js'
+import { postMessage } from './postMessage.js'
+import { registerChatPlugin } from './openai-wrapper.js'
 
 declare const global: {
   FormData: typeof FormData
@@ -25,8 +25,8 @@ if (!global.FormData) {
 
 const name = process.env['MATTERMOST_BOTNAME'] || '@chatgpt'
 const contextMsgCount = Number(process.env['BOT_CONTEXT_MSG'] ?? 100)
-const SYSTEM_MESSAGE_HEADER = '// BOT System Message: '
-const LIMIT_TOKENS = Number(process.env['MAX_PROMPT_TOKENS'] ?? 2000)
+export const SYSTEM_MESSAGE_HEADER = '// BOT System Message: '
+export const LIMIT_TOKENS = Number(process.env['MAX_PROMPT_TOKENS'] ?? 2000)
 
 /* List of all registered plugins */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -46,270 +46,113 @@ const botInstructions =
   'meta data of the messages.'
 
 async function onClientMessage(msg: WebSocketMessage<JSONMessageData>, meId: string) {
-  if (msg.event !== 'posted' || !meId) {
-    matterMostLog.debug({ msg: msg })
+  if ((msg.event !== 'posted' && msg.event !== 'post_edited') || !meId) {
+    matterMostLog.debug('Event not posted ', msg.event, { msg })
     return
   }
 
   const msgData = parseMessageData(msg.data)
-  const posts = await getOlderPosts(msgData.post, { lookBackTime: 1000 * 60 * 60 * 24 * 7 }) //TODO: オプションのpostCount使ってない
+  const posts = await getOlderPosts(msgData.post, {
+    lookBackTime: 1000 * 60 * 60 * 24 * 7,
+    postCount: contextMsgCount,
+  })
 
-  if (isMessageIgnored(msgData, meId, posts)) {
+  if (await isMessageIgnored(msgData, meId, posts)) {
     return
   }
+  botLog.trace({ threadPosts: posts })
 
-  const chatmessages: OpenAI.Chat.CreateChatCompletionRequestMessage[] = [
+  const chatmessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     {
       role: 'system' as const, // ChatCompletionRequestMessageRoleEnum.System,
       content: botInstructions,
     },
   ]
-
-  // create the context
-  for (const threadPost of posts.slice(-contextMsgCount)) {
-    matterMostLog.trace({ msg: threadPost })
-    if (threadPost.user_id === meId) {
-      chatmessages.push({
-        role: 'assistant' as const, //ChatCompletionRequestMessageRoleEnum.Assistant,
-        content: threadPost.props.originalMessage ?? threadPost.message,
-      })
-    } else {
-      chatmessages.push({
-        role: 'user' as const, //ChatCompletionRequestMessageRoleEnum.User,
-        //Not have openai V4 name: await userIdToName(threadPost.user_id),
-        content: threadPost.message,
-      })
-    }
-  }
+  await appendThreadPosts(posts, meId, chatmessages)
 
   await postMessage(msgData, chatmessages)
 }
 
-//TODO: トークン数でメッセージ分割
-// eslint-disable-next-line max-lines-per-function
-async function postMessage(msgData: MessageData, messages: Array<OpenAI.Chat.CreateChatCompletionRequestMessage>) {
-  // start typing
-  const typing = () => wsClient.userTyping(msgData.post.channel_id, (msgData.post.root_id || msgData.post.id) ?? '')
-  typing()
-  const typingInterval = setInterval(typing, 2000)
-
-  let answer = ''
-  let { sumMessagesCount, messagesCount } = calcMessagesTokenCount(messages) //全体トークン数カウント
-  try {
-    botLog.trace({ chatmessages: messages })
-    let systemMessage = SYSTEM_MESSAGE_HEADER
-    ;({
-      messages,
-      sumMessagesCount: sumMessagesCount,
-      messagesCount,
-      systemMessage,
-    } = expireMessages(messages, sumMessagesCount, messagesCount, systemMessage)) //古いメッセージを消去
-    if (systemMessage !== SYSTEM_MESSAGE_HEADER) {
-      newPost(systemMessage, msgData.post, undefined, undefined)
-    }
-    if (sumMessagesCount >= LIMIT_TOKENS) {
-      // 最後の user messageだけでも長すぎるので行単位で分割
-      botLog.info('Too long user message', sumMessagesCount, LIMIT_TOKENS)
-      // failsafeチェック
-      try {
-        answer = await failSafeCheck(messages, answer, msgData.post)
-      } catch (e) {
-        if (e instanceof TypeError) {
-          newPost(e.message, msgData.post, undefined, undefined)
-          return
-        }
-        throw e
-      }
-      let lines = typeof messages[1].content === 'string' ? messages[1].content.split('\n') : undefined // 行に分割 //!messave:ChatCompletionRequestMessageがあればcontentはある
-      if (!lines) {
-        // 最近は文字列だけでなく ChatCompletionContentPartText | ChatCompletionContentPartImage のときもある。
-        if (messages[1].content) {
-          lines = []
-          for (let i = 0; messages[1].content.length > i; i++) {
-            if ((messages[1].content[i] as OpenAI.Chat.ChatCompletionContentPartText).type === 'text') {
-              lines.push(...(messages[1].content[i] as OpenAI.Chat.ChatCompletionContentPartText).text.split('\n'))
-            }
-            // TODO: image_urlのときは? see:https://github.com/openai/openai-node/blob/2242688f14d5ab7dbf312d92a99fa4a7394907dc/src/resources/chat/completions.ts#L287
-          }
-        }
-      }
-      if (!lines || lines.length < 1) {
-        // failsafe
-        botLog.error('No contents', messages[1].content)
-        answer += 'No contents.'
-        newPost(SYSTEM_MESSAGE_HEADER + answer, msgData.post, undefined, undefined)
-        return
-      }
-      // 先に行ごとにトークン数も数えておく
-      const linesCount: Array<number> = []
-      lines.forEach((line: string, i: number) => {
-        if (lines) {
-          //当たり前だけどlinterが気が付かない
-          if (line === '') {
-            lines[i] = '\n'
-            linesCount[i] = 1 // 空行なら改行分のトークン1に決め打ち
-          } else {
-            lines[i] += '\n'
-            linesCount[i] = tokenCount(lines[i]) //時間かかる 200行で40秒
-          }
-        }
+// 今までスレッドのPostを取得してChatMessageに組み立てる
+async function appendThreadPosts(
+  posts: Post[],
+  meId: string,
+  chatmessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+) {
+  for (const threadPost of posts) {
+    matterMostLog.trace({ msg: threadPost })
+    if (threadPost.user_id === meId) {
+      // bot自身のメッセージなのでassitantに入れる
+      // assitant は content: string | null でArrayはないので画像は取り込めない
+      chatmessages.push({
+        role: 'assistant' as never,
+        name: await userIdToName(threadPost.user_id),
+        content: threadPost.props.originalMessage ?? threadPost.message,
       })
-      if (messagesCount[0] + linesCount[0] >= LIMIT_TOKENS) {
-        botLog.warn('Too long first line', lines[0]) //最初の行ですら長くて無理
-        answer += 'Too long first line.\n```\n' + lines[0] + '```\n'
-        newPost(SYSTEM_MESSAGE_HEADER + answer, msgData.post, undefined, undefined)
-        return
-      }
-      let partNo = 0 // パート分けしてChat
-      let currentMessages = [messages[0]]
-      let currentMessagesCount = [messagesCount[0]]
-      let sumCurrentMessagesCount = currentMessagesCount[0] //はじめはSystem Prompt分だけ
-      for (let i = 1; i < lines.length; i++) {
-        botLog.info('Separate part. No.' + partNo)
-        let currentLines = lines[0] // 一行目はオーダー行として全てに使う。
-        let currentLinesCount = linesCount[0]
-        let systemMessage = SYSTEM_MESSAGE_HEADER
-        while (
-          currentMessages.length > 1 &&
-          (sumCurrentMessagesCount + currentLinesCount + linesCount[i] >= LIMIT_TOKENS ||
-            sumCurrentMessagesCount + currentLinesCount > LIMIT_TOKENS / 2)
-        ) {
-          // 次の行を足したらトークン数が足りなくなった場合はassitantを消す
-          // assistantが半分以上の場合も本体よりassistantの方が多いので消す
-          botLog.info('Remove assistant message', currentMessages[1])
-          systemMessage +=
-            'Forget previous message.\n```\n' +
-            (typeof messages[1].content === 'string'
-              ? messages[1].content.split('\n').slice(0, 3).join('\n')
-              : currentMessages[1].content) + // ChatCompletionContentPartの場合は考えられていない TODO: 本当はtextを選んで出すべき
-            '...\n```\n'
-          // 古いassitant messageを取り除く
-          sumCurrentMessagesCount -= currentMessagesCount[1]
-          currentMessagesCount = [currentMessagesCount[0], ...currentMessagesCount.slice(2)]
-          // 最初のmessageをsystem messageと決め打って、二番目のmessageを消す
-          currentMessages = [currentMessages[0], ...currentMessages.slice(2)]
-        }
-        if (sumCurrentMessagesCount + currentLinesCount + linesCount[i] >= LIMIT_TOKENS) {
-          // assitant message を 消したけど、まだ足りなかったので、その行は無視
-          botLog.warn('Too long line', lines[i])
-          systemMessage += `*** No.${++partNo} *** Too long line.\n~~~\n${lines[i]}~~~\n`
-          await newPost(systemMessage, msgData.post, undefined, undefined) //続くので順番維持のため待つ
-          // TODO: 消してしまったassitant messageのroolback
-          continue
-        }
-        if (systemMessage !== SYSTEM_MESSAGE_HEADER) {
-          await newPost(systemMessage, msgData.post, undefined, undefined)
-        }
-        while (i < lines.length && sumCurrentMessagesCount + currentLinesCount + linesCount[i] < LIMIT_TOKENS) {
-          // トークン分まで行を足す
-          currentLinesCount += linesCount[i]
-          currentLines += lines[i++]
-        }
-        botLog.debug(`line done i=${i} currentLinesCount=${currentLinesCount} currentLines=${currentLines}`)
-        currentMessages.push({ role: 'user', content: currentLines })
-        const { message: completion, usage, fileId, props } = await continueThread(currentMessages, msgData)
-        answer += `*** No.${++partNo} ***\n${completion}`
-        answer += makeUsageMessage(usage)
-        botLog.debug('answer=' + answer)
-        await newPost(answer, msgData.post, fileId, props)
-        answer = ''
-        currentMessages.pop() // 最後のuser messageを削除
-        currentMessages.push({ role: 'assistant', content: answer }) // 今の答えを保存
-        currentMessagesCount.push(currentLinesCount)
-        if (usage) {
-          sumCurrentMessagesCount += usage.completion_tokens
-        }
-        botLog.debug('length=' + currentMessages.length)
-      }
     } else {
-      const { message: completion, usage, fileId, props } = await continueThread(messages, msgData)
-      answer += completion
-      answer += makeUsageMessage(usage)
-      await newPost(answer, msgData.post, fileId, props)
-      botLog.debug('answer=' + answer)
+      // Mattermost スレッドに画像の有無で処理が変わる
+      // .metadata.files[] extension mime_type id height width  mini_preview=JPEG16x16
+      if (threadPost.metadata.files?.length > 0 || threadPost.metadata.images) {
+        // 画像つきのPost TODO: すべての過去画像を入れるのか?
+        // textとimage_urlの配列を準備
+        const content: Array<OpenAI.Chat.ChatCompletionContentPart> = [{ type: 'text', text: threadPost.message }]
+        // Mattermost内部の画像
+        await Promise.all(
+          threadPost.metadata.files.map(async file => {
+            //const url = (await mmClient.getFilePublicLink(file.id)).link
+            const originalUrl = await mmClient.getFileUrl(file.id, NaN) //これではOpenAIから見えない
+            // urlの画像を取得してBASE64エンコードされたURLにする
+            const url = await getBase64Image(originalUrl)
+            if (url) {
+              content.push(
+                { type: 'image_url', image_url: { url } }, //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
+              )
+            } //画像取得が失敗した場合は無視
+          }),
+        )
+        // 外部画像URL
+        if (threadPost.metadata.images) {
+          Object.keys(threadPost.metadata.images).forEach(url => {
+            content.push({ type: 'image_url', image_url: { url } })
+          })
+        }
+        chatmessages.push({
+          role: 'user' as never,
+          name: await userIdToName(threadPost.user_id),
+          content,
+        })
+      } else {
+        // テキストだけのPost
+        chatmessages.push({
+          role: 'user' as never,
+          name: await userIdToName(threadPost.user_id),
+          content: threadPost.message,
+        })
+      }
     }
-  } catch (e) {
-    botLog.error('Exception in postMessage()', e)
-    answer += '\n' + 'Sorry, but I encountered an internal error when trying to process your message'
-    if (e instanceof Error) {
-      answer += `\nError: ${e.message}`
-    }
-    await newPost(answer, msgData.post, undefined, undefined)
-  } finally {
-    // stop typing
-    clearInterval(typingInterval)
   }
+}
 
-  function makeUsageMessage(usage: OpenAI.CompletionUsage | undefined) {
-    if (!usage) return ''
-    return `\n${SYSTEM_MESSAGE_HEADER}Prompt:${usage.prompt_tokens} Completion:${usage.completion_tokens} Total:${usage.total_tokens}`
-  }
-}
-async function newPost(
-  answer: string,
-  post: Post,
-  fileId: string | undefined,
-  props: Record<string, string> | undefined,
-) {
-  botLog.trace({ answer })
-  const newPost = await mmClient.createPost({
-    message: answer,
-    channel_id: post.channel_id,
-    props,
-    root_id: post.root_id || post.id,
-    file_ids: fileId ? [fileId] : undefined,
-  } as Post)
-  botLog.trace({ msg: newPost })
-}
-function expireMessages(
-  messages: OpenAI.Chat.CreateChatCompletionRequestMessage[],
-  sumMessagesCount: number,
-  messagesCount: number[],
-  systemMessage: string,
-) {
-  while (messages.length > 2 && sumMessagesCount >= LIMIT_TOKENS) {
-    // system message以外の一番古いメッセージを取り除く
-    botLog.info('Remove message', messages[1])
-    systemMessage += `Forget old message.\n~~~\n${
-      typeof messages[1].content === 'string'
-        ? messages[1].content.split('\n').slice(0, 3).join('\n')
-        : messages[1].content //TODO: 本当はtextを選んで出すべき
-    }\n...\n~~~\n`
-    sumMessagesCount -= messagesCount[1]
-    messagesCount = [messagesCount[0], ...messagesCount.slice(2)]
-    messages = [messages[0], ...messages.slice(2)] // 最初のmessageをsystemと決め打ち
-  }
-  return { messages, sumMessagesCount, messagesCount, systemMessage }
-}
-function calcMessagesTokenCount(messages: Array<OpenAI.Chat.CreateChatCompletionRequestMessage>) {
-  let sumMessagesCount = 0
-  const messagesCount = new Array<number>(messages.length)
-  messages.forEach((message: OpenAI.Chat.CreateChatCompletionRequestMessage, i) => {
-    messagesCount[i] = typeof message.content === 'string' ? tokenCount(message.content) : 0 //TODO: 本当はtextを選んでカウントすべき
-    sumMessagesCount += messagesCount[i]
+// urlの画像を取得してBASE64エンコードされたURLにする
+async function getBase64Image(url: string): Promise<string> {
+  // fetch the image
+  const token = mmClient.getToken()
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`, // Add the Authentication header here
+    },
   })
-  return { sumMessagesCount, messagesCount }
-}
-async function failSafeCheck(
-  messages: Array<OpenAI.Chat.CreateChatCompletionRequestMessage>,
-  answer: string,
-  post: Post,
-): Promise<string> {
-  if (messages[0].role !== 'system') {
-    // 最初のmessageをsystemと決め打っているので確認failsafe
-    botLog.error('Invalid message', messages[0])
-    answer += `Invalid message. Role: ${messages[0].role} \n~~~\n${messages[0].content}\n~~~\n`
-    await newPost(SYSTEM_MESSAGE_HEADER + answer, post, undefined, undefined)
-    throw new TypeError(answer)
+  // error handling if the fetch failed
+  if (!response.ok) {
+    matterMostLog.error(`Fech Image URL HTTP error! status: ${response.status}`)
+    return ''
   }
-  if (messages[1].role !== 'user') {
-    // 2つめのmessageがuserと決め打っているので確認failsafe
-    botLog.error('Invalid message', messages[1])
-    answer += `Invalid message. Role: ${messages[1].role} \n~~~\n${messages[1].content}\n~~~\n`
-    await newPost(SYSTEM_MESSAGE_HEADER + answer, post, undefined, undefined)
-    throw new TypeError(answer)
-  }
-  return answer
+  const buffer = Buffer.from(await response.arrayBuffer())
+  // Convert the buffer to a data URL
+  const mimeType = response.headers.get('content-type')
+  const base64 = buffer.toString('base64')
+  const dataURL = 'data:' + mimeType + ';base64,' + base64
+  return dataURL
 }
 
 /**
@@ -320,15 +163,24 @@ async function failSafeCheck(
  * @param meId The mattermost client id
  * @param previousPosts Older posts in the same channel
  */
-function isMessageIgnored(msgData: MessageData, meId: string, previousPosts: Post[]): boolean {
-  // we are not in a thread and not mentioned
-  if (msgData.post.root_id === '' && !msgData.mentions.includes(meId)) {
-    return true // スレッドではなく、メンションされていない場合
-  }
-
+async function isMessageIgnored(msgData: MattermostMessageData, meId: string, previousPosts: Post[]): Promise<boolean> {
   // it is our own message
   if (msgData.post.user_id === meId) {
     return true // 自分自身のメッセージの場合
+  }
+
+  // チャンネルではなく自分自身へのDMなのか調べる
+  const channelId = msgData.post.channel_id
+  const channel = await mmClient.getChannel(channelId)
+  const members = await mmClient.getChannelMembers(channelId)
+  if (channel.type === 'D' && members.length === 2 && members.find(member => member.user_id === meId)) {
+    // 自分のDMだったので、スレッドもメンションされていなくても返信する stopも効かない
+    return false
+  } else {
+    // we are not in a thread and not mentioned
+    if (msgData.post.root_id === '' && !msgData.mentions.includes(meId)) {
+      return true // スレッドではなく、メンションされていない場合
+    }
   }
 
   for (let i = previousPosts.length - 1; i >= 0; i--) {
@@ -351,7 +203,7 @@ function isMessageIgnored(msgData: MessageData, meId: string, previousPosts: Pos
  * Transforms a data object of a WebSocketMessage to a JS Object.
  * @param msg The WebSocketMessage data.
  */
-function parseMessageData(msg: JSONMessageData): MessageData {
+function parseMessageData(msg: JSONMessageData): MattermostMessageData {
   return {
     mentions: JSON.parse(msg.mentions ?? '[]'),
     post: JSON.parse(msg.post),
@@ -370,7 +222,7 @@ function parseMessageData(msg: JSONMessageData): MessageData {
  * </ul>
  */
 async function getOlderPosts(refPost: Post, options: { lookBackTime?: number; postCount?: number }) {
-  const thread = await mmClient.getPostThread(refPost.id, true, false, true)
+  const thread = await mmClient.getPostThread(refPost.id, true, false, true /*関連するユーザを取得*/)
 
   let posts: Post[] = [...new Set(thread.order)]
     .map(id => thread.posts[id])
@@ -386,44 +238,44 @@ async function getOlderPosts(refPost: Post, options: { lookBackTime?: number; po
     posts = posts.filter(a => a.create_at > refPost.create_at - options.lookBackTime!)
   }
   if (options.postCount && options.postCount > 0) {
-    posts = posts.slice(-options.postCount)
+    posts = posts.slice(-options.postCount) //新しい投稿を指定された個数残す
   }
 
   return posts
 }
 
-// const usernameCache: Record<string, { username: string; expireTime: number }> = {}
+const usernameCache: Record<string, { username: string; expireTime: number }> = {}
 
-// /**
-//  * Looks up the mattermost username for the given userId. Every username which is looked up will be cached for 5 minutes.
-//  * @param userId
-//  */
-// async function userIdToName(userId: string): Promise<string> {
-//   let username: string
+/**
+ * Looks up the mattermost username for the given userId. Every username which is looked up will be cached for 5 minutes.
+ * @param userId
+ */
+async function userIdToName(userId: string): Promise<string> {
+  let username: string
 
-//   // check if userId is in cache and not outdated
-//   if (usernameCache[userId] && Date.now() < usernameCache[userId].expireTime) {
-//     username = usernameCache[userId].username
-//   } else {
-//     // username not in cache our outdated
-//     username = (await mmClient.getUser(userId)).username
+  // check if userId is in cache and not outdated
+  if (usernameCache[userId] && Date.now() < usernameCache[userId].expireTime) {
+    username = usernameCache[userId].username
+  } else {
+    // username not in cache our outdated
+    username = (await mmClient.getUser(userId)).username
 
-//     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username)) {
-//       username = username.replace(/[.@!?]/g, '_').slice(0, 64)
-//     }
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username)) {
+      username = username.replace(/[.@!?]/g, '_').slice(0, 64)
+    }
 
-//     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username)) {
-//       username = [...username.matchAll(/[a-zA-Z0-9_-]/g)].join('').slice(0, 64)
-//     }
+    if (!/^[a-zA-Z0-9_-]{1,64}$/.test(username)) {
+      username = [...username.matchAll(/[a-zA-Z0-9_-]/g)].join('').slice(0, 64)
+    }
 
-//     usernameCache[userId] = {
-//       username: username,
-//       expireTime: Date.now() + 1000 * 60 * 5,
-//     }
-//   }
+    usernameCache[userId] = {
+      username: username,
+      expireTime: Date.now() + 1000 * 60 * 5,
+    }
+  }
 
-//   return username
-// }
+  return username
+}
 
 /* Entry point */
 async function main(): Promise<void> {

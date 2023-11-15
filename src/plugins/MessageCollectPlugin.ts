@@ -1,4 +1,4 @@
-import { AiResponse, MessageData } from '../types.js'
+import { AiResponse, MattermostMessageData } from '../types.js'
 import { PluginBase } from './PluginBase.js'
 import { Post } from '@mattermost/types/lib/posts'
 import { mmClient } from '../mm-client.js'
@@ -25,7 +25,7 @@ export class MessageCollectPlugin extends PluginBase<MessageCollectArgs> {
     return super.setup()
   }
 
-  async runPlugin(args: MessageCollectArgs, msgData: MessageData): Promise<AiResponse> {
+  async runPlugin(args: MessageCollectArgs, msgData: MattermostMessageData): Promise<AiResponse> {
     this.log.trace(args)
     return {
       message: JSON.stringify(

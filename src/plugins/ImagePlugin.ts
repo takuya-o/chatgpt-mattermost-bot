@@ -1,4 +1,4 @@
-import { AiResponse, MessageData } from '../types.js'
+import { AiResponse, MattermostMessageData } from '../types.js'
 import { createChatCompletion, createImage } from '../openai-wrapper.js'
 import FormData from 'form-data'
 import { PluginBase } from './PluginBase.js'
@@ -28,7 +28,7 @@ export class ImagePlugin extends PluginBase<ImagePluginArgs> {
     return super.setup()
   }
 
-  async runPlugin(args: ImagePluginArgs, msgData: MessageData): Promise<AiResponse> {
+  async runPlugin(args: ImagePluginArgs, msgData: MattermostMessageData): Promise<AiResponse> {
     const aiResponse: AiResponse = {
       message: 'Sorry, I could not execute the image plugin.',
     }

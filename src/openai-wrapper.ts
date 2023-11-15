@@ -1,4 +1,4 @@
-import { AiResponse, MessageData } from './types.js'
+import { AiResponse, MattermostMessageData } from './types.js'
 import OpenAI from 'openai'
 import { PluginBase } from './plugins/PluginBase.js'
 
@@ -77,12 +77,13 @@ export function registerChatPlugin(plugin: PluginBase<any>) {
  */
 // eslint-disable-next-line max-lines-per-function
 export async function continueThread(
-  messages: OpenAI.Chat.CreateChatCompletionRequestMessage[],
-  msgData: MessageData,
+  messages: OpenAI.Chat.ChatCompletionMessageParam[],
+  msgData: MattermostMessageData,
 ): Promise<AiResponse> {
   let aiResponse: AiResponse = {
     message: 'Sorry, but it seems I found no valid response.',
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    model: '',
   }
 
   // the number of rounds we're going to run at maximum
@@ -93,14 +94,16 @@ export async function continueThread(
 
   let isIntermediateResponse = true
   while (isIntermediateResponse && maxChainLength-- > 0) {
-    const { responseMessage, usage } = await createChatCompletion(messages, functions)
+    const { responseMessage, usage, model } = await createChatCompletion(messages, functions)
     log.trace(responseMessage)
     if (responseMessage) {
+      aiResponse.model += model + ' '
       if (usage && aiResponse.usage) {
         aiResponse.usage.prompt_tokens += usage.prompt_tokens
         aiResponse.usage.completion_tokens += usage.completion_tokens
         aiResponse.usage.total_tokens += usage.total_tokens
       }
+      // TODO: function_callは古い 新しいのは tools_calls[].function
       // if the function_call is set, we have a plugin call
       if (responseMessage.function_call && responseMessage.function_call.name) {
         const pluginName = responseMessage.function_call.name
@@ -108,11 +111,11 @@ export async function continueThread(
         try {
           const plugin = plugins.get(pluginName)
           if (plugin) {
+            aiResponse.model += pluginName + ' '
             const pluginArguments = JSON.parse(responseMessage.function_call.arguments ?? '[]')
             log.trace({ plugin, pluginArguments })
             const pluginResponse = await plugin.runPlugin(pluginArguments, msgData)
             log.trace({ pluginResponse })
-
             if (pluginResponse.intermediate) {
               messages.push({
                 role: 'function' as const, //ChatCompletionResponseMessageRoleEnum.Function,
@@ -121,6 +124,8 @@ export async function continueThread(
               })
               continue
             }
+            pluginResponse.model = aiResponse.model
+            pluginResponse.usage = aiResponse.usage
             aiResponse = pluginResponse
           } else {
             if (!missingPlugins.has(pluginName)) {
@@ -160,30 +165,65 @@ export async function continueThread(
  * @param functions Function calls which can be called by the openAI model
  */
 export async function createChatCompletion(
-  messages: OpenAI.Chat.CreateChatCompletionRequestMessage[],
+  messages: OpenAI.Chat.ChatCompletionMessageParam[],
   functions: OpenAI.Chat.ChatCompletionCreateParams.Function[] | undefined = undefined,
 ): Promise<{
   responseMessage: OpenAI.Chat.Completions.ChatCompletionMessage | undefined
   usage: OpenAI.CompletionUsage | undefined
+  model: string
 }> {
+  //gpt-4-vision-preview への切り替え
+  let tools = false
+  let currentOpenAi = openai
+  let currentModel = model
+  const visionModel = process.env['OPENAI_VISION_MODEL_NAME']
+  if (visionModel) {
+    messages.some((message: OpenAI.Chat.ChatCompletionMessageParam) => {
+      if (typeof message.content !== 'string') {
+        // 画像が入っていたので切り替え
+        tools = true
+        if (openaiImage) {
+          currentOpenAi = openaiImage
+        }
+        currentModel = visionModel
+        return true
+      }
+    })
+  }
+
   const chatCompletionOptions: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
-    model: model,
+    model: currentModel,
     messages: messages,
-    max_tokens: MAX_TOKENS,
+    max_tokens: MAX_TOKENS, //TODO: messageのTOKEN数から最大値にする。レスポンス長くなるけど翻訳などが一発になる
     temperature: temperature,
   }
   if (functions) {
-    chatCompletionOptions.functions = functions
-    chatCompletionOptions.function_call = 'auto'
+    if (tools) {
+      // visionモデルはfunctions使えない?
+      // // visionモデルはfunctionsでなくてtoolsなのでfuctnionsをtoolsに展開
+      // chatCompletionOptions.tools = []
+      // functions?.forEach((funciton) => {
+      //   chatCompletionOptions.tools?.push({
+      //     type: 'function',
+      //     function: funciton
+      //   })
+      // })
+      // chatCompletionOptions.tool_choice = 'auto'
+    } else {
+      chatCompletionOptions.functions = functions
+      chatCompletionOptions.function_call = 'auto'
+    }
   }
-
-  log.trace({ chatCompletionOptions })
-
-  const chatCompletion = await openai.chat.completions.create(chatCompletionOptions)
-
+  log.trace(
+    chatCompletionOptions.model,
+    chatCompletionOptions.max_tokens,
+    chatCompletionOptions.temperature,
+    chatCompletionOptions.functions,
+    chatCompletionOptions.function_call,
+  )
+  const chatCompletion = await currentOpenAi.chat.completions.create(chatCompletionOptions)
   log.trace({ chatCompletion })
-
-  return { responseMessage: chatCompletion.choices?.[0]?.message, usage: chatCompletion.usage }
+  return { responseMessage: chatCompletion.choices?.[0]?.message, usage: chatCompletion.usage, model: currentModel }
 }
 
 /**

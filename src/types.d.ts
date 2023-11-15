@@ -7,7 +7,7 @@ export type JSONMessageData = {
   sender_name: string
 }
 
-export type MessageData = {
+export type MattermostMessageData = {
   mentions: string[]
   post: Post
   sender_name: string
@@ -19,4 +19,5 @@ export type AiResponse = {
   props?: Record<string, string>
   fileId?: string
   intermediate?: boolean
+  model?: string
 }
