@@ -15,6 +15,7 @@ import { Post } from '@mattermost/types/lib/posts'
 import { WebSocketMessage } from '@mattermost/client'
 import { postMessage } from './postMessage.js'
 import { registerChatPlugin } from './openai-wrapper.js'
+import sharp from 'sharp'
 
 declare const global: {
   FormData: typeof FormData
@@ -133,7 +134,6 @@ async function appendThreadPosts(
   }
 }
 
-// urlの画像を取得してBASE64エンコードされたURLにする
 async function getBase64Image(url: string): Promise<string> {
   // fetch the image
   const token = mmClient.getToken()
@@ -147,9 +147,36 @@ async function getBase64Image(url: string): Promise<string> {
     matterMostLog.error(`Fech Image URL HTTP error! status: ${response.status}`)
     return ''
   }
-  const buffer = Buffer.from(await response.arrayBuffer())
+  let buffer = Buffer.from(await response.arrayBuffer())
+  let { width = 0, height = 0, format = '' } = await sharp(buffer).metadata()
+  // サポートしている画像形式はPNG, JPEG, WEBP, GIF
+  // see: https://platform.openai.com/docs/guides/vision/what-type-of-files-can-i-upload
+  if (!['png', 'jpeg', 'webp', 'gif'].includes(format)) {
+    matterMostLog.warn(`Unsupported image format: ${format}. Converting to JPEG.`)
+    buffer = await sharp(buffer).jpeg().toBuffer()
+    format = 'jpeg'
+  }
+  // 画像の短辺は768px、長辺は2,000px以下に縮小する
+  const shortEdge = 768
+  const longEdge = 1024 //仕様上は2000 //$0.00765 vs $0.01445 倍違うので
+  if (width > longEdge || height > longEdge) {
+    const resizeRatio = longEdge / Math.max(width, height)
+    width *= resizeRatio
+    height *= resizeRatio
+  }
+  if (Math.min(width, height) > shortEdge) {
+    const resizeRatio = shortEdge / Math.min(width, height)
+    width *= resizeRatio
+    height *= resizeRatio
+  }
+  buffer = await sharp(buffer)
+    .resize({
+      width: Math.round(width),
+      height: Math.round(height),
+    })
+    .toBuffer()
   // Convert the buffer to a data URL
-  const mimeType = response.headers.get('content-type')
+  const mimeType = `image/${format}`
   const base64 = buffer.toString('base64')
   const dataURL = 'data:' + mimeType + ';base64,' + base64
   return dataURL

@@ -94,8 +94,17 @@ import FormData from "form-data";
 // src/openai-wrapper.ts
 import OpenAI from "openai";
 var apiKey = process.env["OPENAI_API_KEY"];
-var config = { apiKey };
 var azureOpenAiApiKey = process.env["AZURE_OPENAI_API_KEY"];
+var model = process.env["OPENAI_MODEL_NAME"] ?? "gpt-3.5-turbo";
+var MAX_TOKENS = Number(process.env["OPENAI_MAX_TOKENS"] ?? 2e3);
+var temperature = Number(process.env["OPENAI_TEMPERATURE"] ?? 1);
+var visionModel = process.env["OPENAI_VISION_MODEL_NAME"] ?? "gpt-4-vision-preview";
+if (!apiKey && !azureOpenAiApiKey) {
+  openAILog.error("OPENAI_API_KEY or AZURE_OPENAI_API_KEY is not set");
+  process.exit(1);
+}
+openAILog.debug({ model, max_tokens: MAX_TOKENS, temperature });
+var config = { apiKey };
 if (azureOpenAiApiKey) {
   config = {
     apiKey: azureOpenAiApiKey,
@@ -109,6 +118,7 @@ var openaiImage;
 if (azureOpenAiApiKey) {
   if (!apiKey) {
     openaiImage = new OpenAI({
+      // Azureは東海岸しかDALL-Eが無いので新規に作る。TODO: ここだけ東海岸にする
       apiKey: azureOpenAiApiKey,
       baseURL: `https://${process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai`,
       defaultQuery: { "api-version": process.env["AZURE_OPENAI_API_VERSION"] ?? "2023-08-01-preview" },
@@ -118,10 +128,6 @@ if (azureOpenAiApiKey) {
     openaiImage = new OpenAI({ apiKey });
   }
 }
-var model = process.env["OPENAI_MODEL_NAME"] ?? "gpt-3.5-turbo";
-var MAX_TOKENS = Number(process.env["OPENAI_MAX_TOKENS"] ?? 2e3);
-var temperature = Number(process.env["OPENAI_TEMPERATURE"] ?? 1);
-openAILog.debug({ model, max_tokens: MAX_TOKENS, temperature });
 var plugins = /* @__PURE__ */ new Map();
 var functions = [];
 function registerChatPlugin(plugin) {
@@ -211,7 +217,6 @@ async function createChatCompletion(messages, functions2 = void 0) {
   let tools = false;
   let currentOpenAi = openai;
   let currentModel = model;
-  const visionModel = process.env["OPENAI_VISION_MODEL_NAME"];
   if (visionModel) {
     messages.some((message) => {
       if (typeof message.content !== "string") {
@@ -702,6 +707,7 @@ ${(typeof messages[1].content === "string" ? messages[1].content : messages[1].c
 }
 
 // src/botservice.ts
+import sharp from "sharp";
 if (!global.FormData) {
   global.FormData = FormData3;
 }
@@ -796,8 +802,30 @@ async function getBase64Image(url) {
     matterMostLog.error(`Fech Image URL HTTP error! status: ${response.status}`);
     return "";
   }
-  const buffer = Buffer.from(await response.arrayBuffer());
-  const mimeType = response.headers.get("content-type");
+  let buffer = Buffer.from(await response.arrayBuffer());
+  let { width = 0, height = 0, format = "" } = await sharp(buffer).metadata();
+  if (!["png", "jpeg", "webp", "gif"].includes(format)) {
+    matterMostLog.warn(`Unsupported image format: ${format}. Converting to JPEG.`);
+    buffer = await sharp(buffer).jpeg().toBuffer();
+    format = "jpeg";
+  }
+  const shortEdge = 768;
+  const longEdge = 1024;
+  if (width > longEdge || height > longEdge) {
+    const resizeRatio = longEdge / Math.max(width, height);
+    width *= resizeRatio;
+    height *= resizeRatio;
+  }
+  if (Math.min(width, height) > shortEdge) {
+    const resizeRatio = shortEdge / Math.min(width, height);
+    width *= resizeRatio;
+    height *= resizeRatio;
+  }
+  buffer = await sharp(buffer).resize({
+    width: Math.round(width),
+    height: Math.round(height)
+  }).toBuffer();
+  const mimeType = `image/${format}`;
   const base64 = buffer.toString("base64");
   const dataURL = "data:" + mimeType + ";base64," + base64;
   return dataURL;

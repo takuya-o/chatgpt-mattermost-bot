@@ -5,7 +5,19 @@ import { PluginBase } from './plugins/PluginBase.js'
 import { openAILog as log } from './logging.js'
 
 const apiKey = process.env['OPENAI_API_KEY']
+const azureOpenAiApiKey = process.env['AZURE_OPENAI_API_KEY']
+
+const model = process.env['OPENAI_MODEL_NAME'] ?? 'gpt-3.5-turbo'
+const MAX_TOKENS = Number(process.env['OPENAI_MAX_TOKENS'] ?? 2000)
+const temperature = Number(process.env['OPENAI_TEMPERATURE'] ?? 1)
+const visionModel = process.env['OPENAI_VISION_MODEL_NAME'] ?? 'gpt-4-vision-preview'
+
 // log.trace({ apiKey })
+if (!apiKey && !azureOpenAiApiKey) {
+  log.error('OPENAI_API_KEY or AZURE_OPENAI_API_KEY is not set')
+  process.exit(1)
+}
+log.debug({ model, max_tokens: MAX_TOKENS, temperature })
 
 let config = { apiKey } as {
   apiKey: string
@@ -13,7 +25,7 @@ let config = { apiKey } as {
   defaultQuery?: Record<string, string>
   defaultHeaders?: Record<string, string>
 }
-const azureOpenAiApiKey = process.env['AZURE_OPENAI_API_KEY']
+
 if (azureOpenAiApiKey) {
   config = {
     apiKey: azureOpenAiApiKey,
@@ -31,21 +43,17 @@ if (azureOpenAiApiKey) {
   if (!apiKey) {
     // OPENAI_API_KEY が設定されていないのでAzureを使う 動かないけど。
     openaiImage = new OpenAI({
+      // Azureは東海岸しかDALL-Eが無いので新規に作る。TODO: ここだけ東海岸にする
       apiKey: azureOpenAiApiKey,
       baseURL: `https://${process.env['AZURE_OPENAI_API_INSTANCE_NAME']}.openai.azure.com/openai`,
       defaultQuery: { 'api-version': process.env['AZURE_OPENAI_API_VERSION'] ?? '2023-08-01-preview' },
       defaultHeaders: { 'api-key': azureOpenAiApiKey },
     })
   } else {
+    // Vision APIとImage APIは本家OpenAI APIを使う
     openaiImage = new OpenAI({ apiKey })
   }
 }
-
-const model = process.env['OPENAI_MODEL_NAME'] ?? 'gpt-3.5-turbo'
-const MAX_TOKENS = Number(process.env['OPENAI_MAX_TOKENS'] ?? 2000)
-const temperature = Number(process.env['OPENAI_TEMPERATURE'] ?? 1)
-
-log.debug({ model, max_tokens: MAX_TOKENS, temperature })
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const plugins: Map<string, PluginBase<any>> = new Map()
@@ -176,7 +184,6 @@ export async function createChatCompletion(
   let tools = false
   let currentOpenAi = openai
   let currentModel = model
-  const visionModel = process.env['OPENAI_VISION_MODEL_NAME']
   if (visionModel) {
     messages.some((message: OpenAI.Chat.ChatCompletionMessageParam) => {
       if (typeof message.content !== 'string') {
@@ -199,7 +206,7 @@ export async function createChatCompletion(
   }
   if (functions) {
     if (tools) {
-      // visionモデルはfunctions使えない?
+      // visionモデルはfunctions使えない see: https://platform.openai.com/docs/guides/vision/introduction
       // // visionモデルはfunctionsでなくてtoolsなのでfuctnionsをtoolsに展開
       // chatCompletionOptions.tools = []
       // functions?.forEach((funciton) => {
