@@ -14,10 +14,10 @@ export type MattermostMessageData = {
 }
 
 export type AiResponse = {
-  message: string
+  message: string //ChatCompletionのレスポンスのcontentは未だStringのみ
   usage?: OpenAI.CompletionUsage
   props?: Record<string, string>
-  fileId?: string
+  fileId?: string // 添付画像 mattermostファイルID
   intermediate?: boolean
   model?: string
 }

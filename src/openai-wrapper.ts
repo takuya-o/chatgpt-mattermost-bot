@@ -6,16 +6,22 @@ import { openAILog as log } from './logging.js'
 
 const apiKey = process.env['OPENAI_API_KEY']
 const azureOpenAiApiKey = process.env['AZURE_OPENAI_API_KEY']
+const azureOpenAiApiVersion = process.env['AZURE_OPENAI_API_VERSION'] ?? '2023-09-01-preview'
 
 const model = process.env['OPENAI_MODEL_NAME'] ?? 'gpt-3.5-turbo'
 const MAX_TOKENS = Number(process.env['OPENAI_MAX_TOKENS'] ?? 2000)
 const temperature = Number(process.env['OPENAI_TEMPERATURE'] ?? 1)
-const visionModel = process.env['OPENAI_VISION_MODEL_NAME'] ?? 'gpt-4-vision-preview'
+
+const azureOpenAiVisionApiKey = process.env['AZURE_OPENAI_API_VISION_KEY']
+const visionModel = process.env['OPENAI_VISION_MODEL_NAME'] //Recommend 'gpt-4-vision-preview'
+
+const azureOpenAiImageApiKey = process.env['AZURE_OPENAI_API_IMAGE_KEY']
+const imageModel = process.env['OPENAI_IMAGE_MODEL_NAME'] ?? 'dall-e-3'
 
 // log.trace({ apiKey })
 if (!apiKey && !azureOpenAiApiKey) {
   log.error('OPENAI_API_KEY or AZURE_OPENAI_API_KEY is not set')
-  process.exit(1)
+  process.exit(1) //呼び出され丸まで落ちないのでrestartストリームにはならない
 }
 log.debug({ model, max_tokens: MAX_TOKENS, temperature })
 
@@ -26,32 +32,70 @@ let config = { apiKey } as {
   defaultHeaders?: Record<string, string>
 }
 
+// テキスト用のエンドポイントを用意する
 if (azureOpenAiApiKey) {
   config = {
     apiKey: azureOpenAiApiKey,
     baseURL: `https://${process.env['AZURE_OPENAI_API_INSTANCE_NAME']}.openai.azure.com/openai/deployments/${
       process.env['AZURE_OPENAI_API_DEPLOYMENT_NAME'] ?? 'gpt-35-turbo'
     }`,
-    defaultQuery: { 'api-version': process.env['AZURE_OPENAI_API_VERSION'] ?? '2023-08-01-preview' },
+    defaultQuery: { 'api-version': azureOpenAiApiVersion },
     defaultHeaders: { 'api-key': azureOpenAiApiKey },
   }
 }
 const openai = new OpenAI(config)
-let openaiImage: OpenAI
-if (azureOpenAiApiKey) {
+
+// イメージ生成用のエンドポイントを用意する
+let openaiImage: OpenAI = openai
+if (azureOpenAiApiKey || azureOpenAiImageApiKey) {
   // イメージ生成 DALL-E用のOpenAI APIは別のを使う
-  if (!apiKey) {
-    // OPENAI_API_KEY が設定されていないのでAzureを使う 動かないけど。
+  if (!apiKey || azureOpenAiImageApiKey) {
+    // OPENAI_API_KEY が設定されていいないかつAZURE_OPENAI_API_IMAGE_KEY が設定されているのでAzureを使う
     openaiImage = new OpenAI({
-      // Azureは東海岸しかDALL-Eが無いので新規に作る。TODO: ここだけ東海岸にする
-      apiKey: azureOpenAiApiKey,
-      baseURL: `https://${process.env['AZURE_OPENAI_API_INSTANCE_NAME']}.openai.azure.com/openai`,
-      defaultQuery: { 'api-version': process.env['AZURE_OPENAI_API_VERSION'] ?? '2023-08-01-preview' },
-      defaultHeaders: { 'api-key': azureOpenAiApiKey },
+      // Azureは東海岸(dall-e-2)やスエーデン(dall-e-3)しかDALL-Eが無いので新規に作る
+      apiKey: azureOpenAiImageApiKey ?? azureOpenAiApiKey,
+      baseURL: `https://${
+        process.env['AZURE_OPENAI_API_IMAGE_INSTANCE_NAME'] ?? process.env['AZURE_OPENAI_API_INSTANCE_NAME']
+      }.openai.azure.com/openai/deployments/${
+        process.env['AZURE_OPENAI_API_IMAGE_DEPLOYMENT_NAME'] ?? process.env['AZURE_OPENAI_API_DEPLOYMENT_NAME']
+      }`,
+      defaultQuery: { 'api-version': azureOpenAiApiVersion },
+      defaultHeaders: { 'api-key': azureOpenAiImageApiKey ?? azureOpenAiApiKey },
     })
   } else {
-    // Vision APIとImage APIは本家OpenAI APIを使う
-    openaiImage = new OpenAI({ apiKey })
+    // OPENAI_API_KEY が設定されているのでImage APIは本家OpenAI APIを使う
+    if (azureOpenAiApiKey) {
+      openaiImage = new OpenAI({ apiKey })
+    } else {
+      openaiImage = openai // すでに有る本家OpenAIのエンドポイントを使う
+    }
+  }
+}
+
+// Vision用のエンドポイントを用意する
+let openaiVision: OpenAI = openai
+if (azureOpenAiApiKey || azureOpenAiVisionApiKey) {
+  // Vision用のOpenAI APIは別のを使う
+  if (!apiKey || azureOpenAiVisionApiKey) {
+    // OPENAI_API_KEY が設定されていいないかつAZURE_OPENAI_API_VISION_KEY が設定されているのでAzureを使う
+    openaiVision = new OpenAI({
+      // Azureは、まだgpt-4Vないけど将来のため準備
+      apiKey: azureOpenAiVisionApiKey ?? azureOpenAiApiKey,
+      baseURL: `https://${
+        process.env['AZURE_OPENAI_API_VISION_INSTANCE_NAME'] ?? process.env['AZURE_OPENAI_API_INSTANCE_NAME']
+      }.openai.azure.com/openai/deployments/${
+        process.env['AZURE_OPENAI_API_VISION_DEPLOYMENT_NAME'] ?? process.env['AZURE_OPENAI_API_DEPLOYMENT_NAME']
+      }`,
+      defaultQuery: { 'api-version': azureOpenAiApiVersion },
+      defaultHeaders: { 'api-key': azureOpenAiVisionApiKey ?? azureOpenAiApiKey },
+    })
+  } else {
+    // Vision用のOpenAI APIは本家OpenAI APIを使う
+    if (azureOpenAiApiKey && azureOpenAiImageApiKey) {
+      openaiVision = new OpenAI({ apiKey })
+    } else {
+      openaiVision = openai // すでに有る本家OpenAIのエンドポイントを使う
+    }
   }
 }
 
@@ -111,51 +155,68 @@ export async function continueThread(
         aiResponse.usage.completion_tokens += usage.completion_tokens
         aiResponse.usage.total_tokens += usage.total_tokens
       }
-      // TODO: function_callは古い 新しいのは tools_calls[].function
+      // function_callは古い 新しいのは tools_calls[].functionなので、そちらにする
+      if (responseMessage.function_call) {
+        if (!responseMessage.tool_calls) {
+          responseMessage.tool_calls = []
+        }
+        responseMessage.tool_calls.push({
+          id: '',
+          type: 'function',
+          function: responseMessage.function_call,
+        })
+      }
       // if the function_call is set, we have a plugin call
-      if (responseMessage.function_call && responseMessage.function_call.name) {
-        const pluginName = responseMessage.function_call.name
-        log.trace({ pluginName })
-        try {
-          const plugin = plugins.get(pluginName)
-          if (plugin) {
-            aiResponse.model += pluginName + ' '
-            const pluginArguments = JSON.parse(responseMessage.function_call.arguments ?? '[]')
-            log.trace({ plugin, pluginArguments })
-            const pluginResponse = await plugin.runPlugin(pluginArguments, msgData)
-            log.trace({ pluginResponse })
-            if (pluginResponse.intermediate) {
-              messages.push({
-                role: 'function' as const, //ChatCompletionResponseMessageRoleEnum.Function,
-                name: pluginName,
-                content: pluginResponse.message,
-              })
-              continue
+      if (responseMessage.tool_calls) {
+        await Promise.all(
+          responseMessage.tool_calls.map(async tool_call => {
+            if (tool_call.type !== 'function') {
+              return
             }
-            pluginResponse.model = aiResponse.model
-            pluginResponse.usage = aiResponse.usage
-            aiResponse = pluginResponse
-          } else {
-            if (!missingPlugins.has(pluginName)) {
-              missingPlugins.add(pluginName)
-              log.debug({
-                error: 'Missing plugin ' + pluginName,
-                pluginArguments: responseMessage.function_call.arguments,
-              })
-              messages.push({
-                role: 'system',
-                content: `There is no plugin named '${pluginName}' available. Try without using that plugin.`,
-              })
-              continue
-            } else {
-              log.debug({ messages })
+            const pluginName = tool_call.function.name
+            log.trace({ pluginName })
+            try {
+              const plugin = plugins.get(pluginName)
+              if (plugin) {
+                aiResponse.model += pluginName + ' '
+                const pluginArguments = JSON.parse(tool_call.function.arguments ?? '[]') // JSON.parse例外出るかも
+                log.trace({ plugin, pluginArguments })
+                const pluginResponse = await plugin.runPlugin(pluginArguments, msgData)
+                log.trace({ pluginResponse })
+                if (pluginResponse.intermediate) {
+                  messages.push({
+                    role: 'function' as const, //ChatCompletionResponseMessageRoleEnum.Function,
+                    name: pluginName,
+                    content: pluginResponse.message,
+                  })
+                  return //continue
+                }
+                pluginResponse.model = aiResponse.model
+                pluginResponse.usage = aiResponse.usage
+                aiResponse = pluginResponse
+              } else {
+                if (!missingPlugins.has(pluginName)) {
+                  missingPlugins.add(pluginName)
+                  log.debug({
+                    error: 'Missing plugin ' + pluginName,
+                    pluginArguments: tool_call.function.arguments,
+                  })
+                  messages.push({
+                    role: 'system',
+                    content: `There is no plugin named '${pluginName}' available. Try without using that plugin.`,
+                  })
+                  return //continue
+                } else {
+                  log.debug({ messages })
+                  aiResponse.message = `Sorry, but it seems there was an error when using the plugin \`\`\`${pluginName}\`\`\`.`
+                }
+              }
+            } catch (e) {
+              log.debug({ messages, error: e })
               aiResponse.message = `Sorry, but it seems there was an error when using the plugin \`\`\`${pluginName}\`\`\`.`
             }
-          }
-        } catch (e) {
-          log.debug({ messages, error: e })
-          aiResponse.message = `Sorry, but it seems there was an error when using the plugin \`\`\`${pluginName}\`\`\`.`
-        }
+          }),
+        )
       } else if (responseMessage.content) {
         aiResponse.message = responseMessage.content
       }
@@ -189,15 +250,14 @@ export async function createChatCompletion(
       if (typeof message.content !== 'string') {
         // 画像が入っていたので切り替え
         tools = true
-        if (openaiImage) {
-          currentOpenAi = openaiImage
+        if (openaiVision) {
+          currentOpenAi = openaiVision
         }
         currentModel = visionModel
         return true
       }
     })
   }
-
   const chatCompletionOptions: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
     model: currentModel,
     messages: messages,
@@ -239,7 +299,7 @@ export async function createChatCompletion(
  */
 export async function createImage(prompt: string): Promise<string | undefined> {
   const createImageOptions: OpenAI.Images.ImageGenerateParams = {
-    model: process.env['OPENAI_IMAGE_MODEL_NAME'] ?? 'dall-e-2',
+    model: imageModel,
     prompt,
     n: 1,
     size: '1024x1024', //Must be one of 256x256, 512x512, or 1024x1024 for dall-e-2. Must be one of 1024x1024, 1792x1024, or 1024x1792 for dall-e-3 models.
@@ -247,7 +307,43 @@ export async function createImage(prompt: string): Promise<string | undefined> {
     response_format: 'b64_json',
   }
   log.trace({ createImageOptions })
-  const image = await (openaiImage ? openaiImage : openai).images.generate(createImageOptions)
+  let image: OpenAI.Images.ImagesResponse
+  // AzureだけどOPENAI_IMAGE_MODELをしてくれていればDALL-E2の場合の特別な対応をする
+  if (!azureOpenAiImageApiKey || imageModel !== 'dall-e-2') {
+    image = await openaiImage.images.generate(createImageOptions)
+  } else {
+    // Azure OpenAIのdall-e-2の場合は非同期なので特別な対応が必要
+    const url = `https://${
+      process.env['AZURE_OPENAI_API_IMAGE_INSTANCE_NAME'] ?? process.env['AZURE_OPENAI_API_INSTANCE_NAME']
+    }.openai.azure.com/openai/images/generate:submit?api-version=${azureOpenAiApiVersion}`
+    const headers = { 'api-key': azureOpenAiImageApiKey ?? '', 'Content-Type': 'application/json' }
+    const submission = await fetch(url, { headers, method: 'POST', body: JSON.stringify(createImageOptions) })
+    if (!submission.ok) {
+      log.error(`Failed to submit request ${url}}`)
+      return undefined // 何らかのエラー
+    }
+    const operationLocation = submission.headers.get('operation-location')
+    if (!operationLocation) {
+      log.error(`No operation location ${url}`)
+      return undefined // 何らかのエラー
+    }
+    let result: { status: string; result?: OpenAI.Images.ImagesResponse } = { status: 'unknown' }
+    while (result.status != 'succeeded') {
+      await new Promise(resolve => setTimeout(resolve, 1000)) // 1秒待機
+      const response = await fetch(operationLocation, { headers })
+      if (!response.ok) {
+        log.error(`Failed to get status ${url}`)
+        return undefined // 何らかのエラー
+      }
+      result = (await response.json()) as { status: string; result?: OpenAI.Images.ImagesResponse }
+    }
+    if (result?.result) {
+      image = result.result
+    } else {
+      log.error(`No result ${url}`)
+      return undefined // 何らかのエラー
+    }
+  }
   log.trace({ image })
   return image.data[0]?.b64_json
 }

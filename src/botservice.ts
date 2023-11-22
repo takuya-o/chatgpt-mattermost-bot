@@ -12,6 +12,7 @@ import { MessageCollectPlugin } from './plugins/MessageCollectPlugin.js'
 import OpenAI from 'openai'
 import { PluginBase } from './plugins/PluginBase.js'
 import { Post } from '@mattermost/types/lib/posts'
+import { UnuseImagesPlugin } from './plugins/UnuseImagesPlugin.js'
 import { WebSocketMessage } from '@mattermost/client'
 import { postMessage } from './postMessage.js'
 import { registerChatPlugin } from './openai-wrapper.js'
@@ -36,6 +37,7 @@ const plugins: PluginBase<any>[] = [
   new ImagePlugin('image-plugin', 'Generates an image based on a given image description.'),
   new ExitPlugin('exit-plugin', 'Says goodbye to the user and wish him a good day.'),
   new MessageCollectPlugin('message-collect-plugin', 'Collects messages in the thread for a specific user or time'),
+  new UnuseImagesPlugin('unuse-images-plugin', 'Ignore images when asked to "ignore images".'), // 画像を無視してGPT-4に戻す まだGPT-4Vではfunction使えないけどね
 ]
 
 /* The main system instruction for GPT */
@@ -69,7 +71,7 @@ async function onClientMessage(msg: WebSocketMessage<JSONMessageData>, meId: str
       content: botInstructions,
     },
   ]
-  await appendThreadPosts(posts, meId, chatmessages)
+  await appendThreadPosts(posts, meId, chatmessages, isUnuseImages(meId, posts))
 
   await postMessage(msgData, chatmessages)
 }
@@ -79,6 +81,7 @@ async function appendThreadPosts(
   posts: Post[],
   meId: string,
   chatmessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+  unuseImages: boolean,
 ) {
   for (const threadPost of posts) {
     matterMostLog.trace({ msg: threadPost })
@@ -93,29 +96,35 @@ async function appendThreadPosts(
     } else {
       // Mattermost スレッドに画像の有無で処理が変わる
       // .metadata.files[] extension mime_type id height width  mini_preview=JPEG16x16
-      if (threadPost.metadata.files?.length > 0 || threadPost.metadata.images) {
+      if (!unuseImages && (threadPost.metadata.files?.length > 0 || threadPost.metadata.images)) {
         // 画像つきのPost TODO: すべての過去画像を入れるのか?
         // textとimage_urlの配列を準備
         const content: Array<OpenAI.Chat.ChatCompletionContentPart> = [{ type: 'text', text: threadPost.message }]
-        // Mattermost内部の画像
-        await Promise.all(
-          threadPost.metadata.files.map(async file => {
-            //const url = (await mmClient.getFilePublicLink(file.id)).link
-            const originalUrl = await mmClient.getFileUrl(file.id, NaN) //これではOpenAIから見えない
-            // urlの画像を取得してBASE64エンコードされたURLにする
-            const url = await getBase64Image(originalUrl)
-            if (url) {
-              content.push(
-                { type: 'image_url', image_url: { url } }, //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
-              )
-            } //画像取得が失敗した場合は無視
-          }),
-        )
+        if (threadPost.metadata.files) {
+          // Mattermost内部の画像
+          await Promise.all(
+            threadPost.metadata.files.map(async file => {
+              //const url = (await mmClient.getFilePublicLink(file.id)).link
+              const originalUrl = await mmClient.getFileUrl(file.id, NaN) //これではOpenAIから見えない
+              // urlの画像を取得してBASE64エンコードされたURLにする
+              const url = await getBase64Image(originalUrl, mmClient.getToken())
+              if (url) {
+                content.push(
+                  { type: 'image_url', image_url: { url } }, //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
+                )
+              } //画像取得が失敗した場合は無視
+            }),
+          )
+        }
         // 外部画像URL
         if (threadPost.metadata.images) {
-          Object.keys(threadPost.metadata.images).forEach(url => {
-            content.push({ type: 'image_url', image_url: { url } })
-          })
+          await Promise.all(
+            Object.keys(threadPost.metadata.images).map(async url => {
+              // GPT-4Vの解釈できてリーズナブルな画像形式とサイズに変換
+              url = await getBase64Image(url, mmClient.getToken()) // 元のURLもMattermostのURL
+              content.push({ type: 'image_url', image_url: { url } })
+            }),
+          )
         }
         chatmessages.push({
           role: 'user' as never,
@@ -134,14 +143,15 @@ async function appendThreadPosts(
   }
 }
 
-async function getBase64Image(url: string): Promise<string> {
+async function getBase64Image(url: string, token: string = ''): Promise<string> {
   // fetch the image
-  const token = mmClient.getToken()
-  const response = await fetch(url, {
-    headers: {
+  const init: RequestInit = {}
+  if (token) {
+    init.headers = {
       Authorization: `Bearer ${token}`, // Add the Authentication header here
-    },
-  })
+    }
+  }
+  const response = await fetch(url, init)
   // error handling if the fetch failed
   if (!response.ok) {
     matterMostLog.error(`Fech Image URL HTTP error! status: ${response.status}`)
@@ -200,8 +210,13 @@ async function isMessageIgnored(msgData: MattermostMessageData, meId: string, pr
   const channelId = msgData.post.channel_id
   const channel = await mmClient.getChannel(channelId)
   const members = await mmClient.getChannelMembers(channelId)
-  if (channel.type === 'D' && members.length === 2 && members.find(member => member.user_id === meId)) {
-    // 自分のDMだったので、スレッドもメンションされていなくても返信する stopも効かない
+  if (
+    channel.type === 'D' &&
+    msgData.post.root_id === '' &&
+    members.length === 2 &&
+    members.find(member => member.user_id === meId)
+  ) {
+    // 自分のDMだったので、スレッドでなければ、メンションされていなくても返信する よって stopも効かない
     return false
   } else {
     // we are not in a thread and not mentioned
@@ -226,13 +241,27 @@ async function isMessageIgnored(msgData: MattermostMessageData, meId: string, pr
   return true // スレッドにいるがメンションされていない場合
 }
 
+function isUnuseImages(meId: string, previousPosts: Post[]): boolean {
+  for (let i = previousPosts.length - 1; i >= 0; i--) {
+    // we were asked to stop participating in the conversation
+    if (previousPosts[i].props.bot_images === 'stopped') {
+      return true // 会話で画像を使用しないように要求された場合
+    }
+    if (previousPosts[i].user_id === meId || previousPosts[i].message.includes(name)) {
+      // we are in a thread were we are actively participating, or we were mentioned in the thread => respond
+      return false // アクティブに参加している場合またはスレッドでメンションされている場合は返信する
+    }
+  }
+  return false // 特にないのでDefaultは画像を使う
+}
+
 /**
  * Transforms a data object of a WebSocketMessage to a JS Object.
  * @param msg The WebSocketMessage data.
  */
 function parseMessageData(msg: JSONMessageData): MattermostMessageData {
   return {
-    mentions: JSON.parse(msg.mentions ?? '[]'),
+    mentions: JSON.parse(msg.mentions ?? '[]'), // MattermostがちまよっていたらJSON.parseで例外でるかもしれない
     post: JSON.parse(msg.post),
     sender_name: msg.sender_name,
   }

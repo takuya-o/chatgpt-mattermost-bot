@@ -44,12 +44,13 @@ export class ImagePlugin extends PluginBase<ImagePluginArgs> {
           aiResponse.props = {
             originalMessage: 'Sure here is the image you requested. <IMAGE>' + imagePrompt + '</IMAGE>',
           }
-          aiResponse.fileId = fileId
+          aiResponse.fileId = fileId // mattermostのFileIDで一つだけファイルをリターンできる
         }
       }
     } catch (e) {
       this.log.error(e)
       this.log.error(`The input was:\n\n${args.imageDescription}`)
+      aiResponse.message += `\n${(e as Error).message}\nThe input was:${args.imageDescription}`
     }
 
     return aiResponse

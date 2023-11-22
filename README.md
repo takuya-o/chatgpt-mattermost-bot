@@ -1,5 +1,9 @@
 ## Enhanced from the [original yGuy/chatgpt-mattermost-bot](https://github.com/yGuy/chatgpt-mattermost-bot)
 
+* Support GPT-4V Vision API
+  + Realization of multimodal text and images in conjunction with image plugins. **Limitation**: The plugins are not possible in threads that have been image attached, Under the 1106 gpt-4-vision-vewview.
+  ![The screenshot depicts a fictional chat in Mattermost where a user asks a bot to describe a zoo scene, and to create an image that evokes positive emotions; the bot responds with a colorful zoo illustration and a vivid sunset beach scene.](./mattermost-gpt4v.png)
+* No mention required in Direct Message
 * Support Azure OpenAI API
   + Use the original OpenAI for image generation even when using Azure OpenAI API
 * Build enhancement (The original is now in TypeScript as well by version 2.0.)
@@ -7,7 +11,7 @@
   + Lint by eslint
   + Build by esbuild
   + SWC for debug
-* Token-count-based conversation thread management
+* Token-count-based conversation thread management (MessageCollectPlugin may interfere)
 * Splitting message that are too long
 * Support GitLab AutoDevOps by test dummy
 
@@ -44,10 +48,18 @@ or when [running the docker image](#using-the-ready-made-docker-image) or when c
 | OPENAI_MAX_TOKENS    | no       | `2000`                       | The maximum number of tokens to pass to the OpenAI API, defaults to 2000                                                                                                                           |
 | OPENAI_TEMPERATURE   | no       | `0.2`                        | The sampling temperature to use, between 0 and 2, defaults to 1. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic. |
 | MAX_PROMPT_TOKENS    | no       | `2096`                       | Maximum number of prompt tokens, default to 2000. For example on GPT-4 = 8196 - OPENAI_MAX_TOKENS.                                                                                                 |
-| AZURE_OPENAI_API_KEY | no       | `0123456789abcdefghijklmno`  | The Azure OpenAI Service API key to authoenticate. If OPENAI_API_KEY is also set, the original OpenAI is used for image generation.                                                                |
+| OPENAI_VISION_MODEL_NAME | no   | `gpt-4-vision-preview`       | The OpenAI VISION model to use, defaults to use OPENAI_MODEL_NAME. Use this when you want to change the model when attaching an image.                                                             |
+| OPENAI_IMAGE_MODEL_NAME  | no   | `dall-e-2`                   | The OpenAI IMAGE model to use, defaults to `dall-e-3`                                                                                                                                              |
+| AZURE_OPENAI_API_KEY | no       | `0123456789abcdefghijklmno`  | The Azure OpenAI Service API key to authoenticate. If OPENAI_API_KEY is also set, the original OpenAI is used for vision or image generation.                                                      |
 | AZURE_OPENAI_API_INSTANCE_NAME   | no | `example-name`         | The instance name on the Azure OpenAI Service                                                                                                                                                      |
 | AZURE_OPENAI_API_DEPLOYMENT_NAME | no | `gpt-35-turbo`         | The name of the deployed model on the Azure OpenAI Service                                                                                                                                         |
-| AZURE_OPENAI_API_VERSION         | no | `2023-03-15-preview`   | The Azure OpenAI version                                                                                                                                                                           |
+| AZURE_OPENAI_API_VERSION         | no | `2023-12-01-preview`   | The Azure OpenAI version                                                                                                                                                                           |
+| AZURE_OPENAI_API_VISION_KEY             | no | `0123456789abcdefghijklmno`  | The Azure OpenAI Service API key to authoenticate. If this is set, Azure OpenAI is used for vision.                                                                                   |
+| AZURE_OPENAI_API_VISION_INSTANCE_NAME   | no | `example-name`  | The instance name on the Azure OpenAI Service for Vision API if specially needed                                                                                                                   |
+| AZURE_OPENAI_API_VISION_DEPLOYMENT_NAME | no | `gpt-4v`        | The name of the deployed model on the Azure OpenAI Service for Vision API if specially needed                                                                                                      |
+| AZURE_OPENAI_API_IMAGE_KEY             | no | `0123456789abcdefghijklmno`  | The Azure OpenAI Service API key to authoenticate. If this is set, Azure OpenAI is used for image generation.                                                                          |
+| AZURE_OPENAI_API_IMAGE_INSTANCE_NAME   | no | `example-name`   | The instance name on the Azure OpenAI Service for Image API if specially needed                                                                                                                    |
+| AZURE_OPENAI_API_IMAGE_DEPLOYMENT_NAME | no | `Dalle3`       | The name of the deployed model on the Azure OpenAI Service for Iamge API if specially needed. DALL-E 3 require 2023-12-01-preview API Version at least                                               |
 | YFILES_SERVER_URL    | no       | `http://localhost:3835`      | The URL to the yFiles graph service for embedding auto-generated diagrams.                                                                                                                         |
 | NODE_EXTRA_CA_CERTS  | no       | `/file/to/cert.crt`          | a link to a certificate file to pass to node.js for authenticating self-signed certificates                                                                                                        |
 | MATTERMOST_BOTNAME   | no       | `"@chatgpt"`                 | the name of the bot user in Mattermost, defaults to '@chatgpt'                                                                                                                                     |

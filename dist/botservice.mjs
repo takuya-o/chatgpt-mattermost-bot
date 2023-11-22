@@ -95,10 +95,14 @@ import FormData from "form-data";
 import OpenAI from "openai";
 var apiKey = process.env["OPENAI_API_KEY"];
 var azureOpenAiApiKey = process.env["AZURE_OPENAI_API_KEY"];
+var azureOpenAiApiVersion = process.env["AZURE_OPENAI_API_VERSION"] ?? "2023-09-01-preview";
 var model = process.env["OPENAI_MODEL_NAME"] ?? "gpt-3.5-turbo";
 var MAX_TOKENS = Number(process.env["OPENAI_MAX_TOKENS"] ?? 2e3);
 var temperature = Number(process.env["OPENAI_TEMPERATURE"] ?? 1);
-var visionModel = process.env["OPENAI_VISION_MODEL_NAME"] ?? "gpt-4-vision-preview";
+var azureOpenAiVisionApiKey = process.env["AZURE_OPENAI_API_VISION_KEY"];
+var visionModel = process.env["OPENAI_VISION_MODEL_NAME"];
+var azureOpenAiImageApiKey = process.env["AZURE_OPENAI_API_IMAGE_KEY"];
+var imageModel = process.env["OPENAI_IMAGE_MODEL_NAME"] ?? "dall-e-3";
 if (!apiKey && !azureOpenAiApiKey) {
   openAILog.error("OPENAI_API_KEY or AZURE_OPENAI_API_KEY is not set");
   process.exit(1);
@@ -109,23 +113,45 @@ if (azureOpenAiApiKey) {
   config = {
     apiKey: azureOpenAiApiKey,
     baseURL: `https://${process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai/deployments/${process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"] ?? "gpt-35-turbo"}`,
-    defaultQuery: { "api-version": process.env["AZURE_OPENAI_API_VERSION"] ?? "2023-08-01-preview" },
+    defaultQuery: { "api-version": azureOpenAiApiVersion },
     defaultHeaders: { "api-key": azureOpenAiApiKey }
   };
 }
 var openai = new OpenAI(config);
-var openaiImage;
-if (azureOpenAiApiKey) {
-  if (!apiKey) {
+var openaiImage = openai;
+if (azureOpenAiApiKey || azureOpenAiImageApiKey) {
+  if (!apiKey || azureOpenAiImageApiKey) {
     openaiImage = new OpenAI({
-      // Azureは東海岸しかDALL-Eが無いので新規に作る。TODO: ここだけ東海岸にする
-      apiKey: azureOpenAiApiKey,
-      baseURL: `https://${process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai`,
-      defaultQuery: { "api-version": process.env["AZURE_OPENAI_API_VERSION"] ?? "2023-08-01-preview" },
-      defaultHeaders: { "api-key": azureOpenAiApiKey }
+      // Azureは東海岸(dall-e-2)やスエーデン(dall-e-3)しかDALL-Eが無いので新規に作る
+      apiKey: azureOpenAiImageApiKey ?? azureOpenAiApiKey,
+      baseURL: `https://${process.env["AZURE_OPENAI_API_IMAGE_INSTANCE_NAME"] ?? process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai/deployments/${process.env["AZURE_OPENAI_API_IMAGE_DEPLOYMENT_NAME"] ?? process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"]}`,
+      defaultQuery: { "api-version": azureOpenAiApiVersion },
+      defaultHeaders: { "api-key": azureOpenAiImageApiKey ?? azureOpenAiApiKey }
     });
   } else {
-    openaiImage = new OpenAI({ apiKey });
+    if (azureOpenAiApiKey) {
+      openaiImage = new OpenAI({ apiKey });
+    } else {
+      openaiImage = openai;
+    }
+  }
+}
+var openaiVision = openai;
+if (azureOpenAiApiKey || azureOpenAiVisionApiKey) {
+  if (!apiKey || azureOpenAiVisionApiKey) {
+    openaiVision = new OpenAI({
+      // Azureは、まだgpt-4Vないけど将来のため準備
+      apiKey: azureOpenAiVisionApiKey ?? azureOpenAiApiKey,
+      baseURL: `https://${process.env["AZURE_OPENAI_API_VISION_INSTANCE_NAME"] ?? process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai/deployments/${process.env["AZURE_OPENAI_API_VISION_DEPLOYMENT_NAME"] ?? process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"]}`,
+      defaultQuery: { "api-version": azureOpenAiApiVersion },
+      defaultHeaders: { "api-key": azureOpenAiVisionApiKey ?? azureOpenAiApiKey }
+    });
+  } else {
+    if (azureOpenAiApiKey && azureOpenAiImageApiKey) {
+      openaiVision = new OpenAI({ apiKey });
+    } else {
+      openaiVision = openai;
+    }
   }
 }
 var plugins = /* @__PURE__ */ new Map();
@@ -161,50 +187,67 @@ async function continueThread(messages, msgData) {
         aiResponse.usage.completion_tokens += usage.completion_tokens;
         aiResponse.usage.total_tokens += usage.total_tokens;
       }
-      if (responseMessage.function_call && responseMessage.function_call.name) {
-        const pluginName = responseMessage.function_call.name;
-        openAILog.trace({ pluginName });
-        try {
-          const plugin = plugins.get(pluginName);
-          if (plugin) {
-            aiResponse.model += pluginName + " ";
-            const pluginArguments = JSON.parse(responseMessage.function_call.arguments ?? "[]");
-            openAILog.trace({ plugin, pluginArguments });
-            const pluginResponse = await plugin.runPlugin(pluginArguments, msgData);
-            openAILog.trace({ pluginResponse });
-            if (pluginResponse.intermediate) {
-              messages.push({
-                role: "function",
-                //ChatCompletionResponseMessageRoleEnum.Function,
-                name: pluginName,
-                content: pluginResponse.message
-              });
-              continue;
+      if (responseMessage.function_call) {
+        if (!responseMessage.tool_calls) {
+          responseMessage.tool_calls = [];
+        }
+        responseMessage.tool_calls.push({
+          id: "",
+          type: "function",
+          function: responseMessage.function_call
+        });
+      }
+      if (responseMessage.tool_calls) {
+        await Promise.all(
+          responseMessage.tool_calls.map(async (tool_call) => {
+            if (tool_call.type !== "function") {
+              return;
             }
-            pluginResponse.model = aiResponse.model;
-            pluginResponse.usage = aiResponse.usage;
-            aiResponse = pluginResponse;
-          } else {
-            if (!missingPlugins.has(pluginName)) {
-              missingPlugins.add(pluginName);
-              openAILog.debug({
-                error: "Missing plugin " + pluginName,
-                pluginArguments: responseMessage.function_call.arguments
-              });
-              messages.push({
-                role: "system",
-                content: `There is no plugin named '${pluginName}' available. Try without using that plugin.`
-              });
-              continue;
-            } else {
-              openAILog.debug({ messages });
+            const pluginName = tool_call.function.name;
+            openAILog.trace({ pluginName });
+            try {
+              const plugin = plugins.get(pluginName);
+              if (plugin) {
+                aiResponse.model += pluginName + " ";
+                const pluginArguments = JSON.parse(tool_call.function.arguments ?? "[]");
+                openAILog.trace({ plugin, pluginArguments });
+                const pluginResponse = await plugin.runPlugin(pluginArguments, msgData);
+                openAILog.trace({ pluginResponse });
+                if (pluginResponse.intermediate) {
+                  messages.push({
+                    role: "function",
+                    //ChatCompletionResponseMessageRoleEnum.Function,
+                    name: pluginName,
+                    content: pluginResponse.message
+                  });
+                  return;
+                }
+                pluginResponse.model = aiResponse.model;
+                pluginResponse.usage = aiResponse.usage;
+                aiResponse = pluginResponse;
+              } else {
+                if (!missingPlugins.has(pluginName)) {
+                  missingPlugins.add(pluginName);
+                  openAILog.debug({
+                    error: "Missing plugin " + pluginName,
+                    pluginArguments: tool_call.function.arguments
+                  });
+                  messages.push({
+                    role: "system",
+                    content: `There is no plugin named '${pluginName}' available. Try without using that plugin.`
+                  });
+                  return;
+                } else {
+                  openAILog.debug({ messages });
+                  aiResponse.message = `Sorry, but it seems there was an error when using the plugin \`\`\`${pluginName}\`\`\`.`;
+                }
+              }
+            } catch (e) {
+              openAILog.debug({ messages, error: e });
               aiResponse.message = `Sorry, but it seems there was an error when using the plugin \`\`\`${pluginName}\`\`\`.`;
             }
-          }
-        } catch (e) {
-          openAILog.debug({ messages, error: e });
-          aiResponse.message = `Sorry, but it seems there was an error when using the plugin \`\`\`${pluginName}\`\`\`.`;
-        }
+          })
+        );
       } else if (responseMessage.content) {
         aiResponse.message = responseMessage.content;
       }
@@ -221,8 +264,8 @@ async function createChatCompletion(messages, functions2 = void 0) {
     messages.some((message) => {
       if (typeof message.content !== "string") {
         tools = true;
-        if (openaiImage) {
-          currentOpenAi = openaiImage;
+        if (openaiVision) {
+          currentOpenAi = openaiVision;
         }
         currentModel = visionModel;
         return true;
@@ -256,7 +299,7 @@ async function createChatCompletion(messages, functions2 = void 0) {
 }
 async function createImage(prompt) {
   const createImageOptions = {
-    model: process.env["OPENAI_IMAGE_MODEL_NAME"] ?? "dall-e-2",
+    model: imageModel,
     prompt,
     n: 1,
     size: "1024x1024",
@@ -266,7 +309,39 @@ async function createImage(prompt) {
     response_format: "b64_json"
   };
   openAILog.trace({ createImageOptions });
-  const image = await (openaiImage ? openaiImage : openai).images.generate(createImageOptions);
+  let image;
+  if (!azureOpenAiImageApiKey || imageModel !== "dall-e-2") {
+    image = await openaiImage.images.generate(createImageOptions);
+  } else {
+    const url = `https://${process.env["AZURE_OPENAI_API_IMAGE_INSTANCE_NAME"] ?? process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai/images/generate:submit?api-version=${azureOpenAiApiVersion}`;
+    const headers = { "api-key": azureOpenAiImageApiKey ?? "", "Content-Type": "application/json" };
+    const submission = await fetch(url, { headers, method: "POST", body: JSON.stringify(createImageOptions) });
+    if (!submission.ok) {
+      openAILog.error(`Failed to submit request ${url}}`);
+      return void 0;
+    }
+    const operationLocation = submission.headers.get("operation-location");
+    if (!operationLocation) {
+      openAILog.error(`No operation location ${url}`);
+      return void 0;
+    }
+    let result = { status: "unknown" };
+    while (result.status != "succeeded") {
+      await new Promise((resolve) => setTimeout(resolve, 1e3));
+      const response = await fetch(operationLocation, { headers });
+      if (!response.ok) {
+        openAILog.error(`Failed to get status ${url}`);
+        return void 0;
+      }
+      result = await response.json();
+    }
+    if (result?.result) {
+      image = result.result;
+    } else {
+      openAILog.error(`No result ${url}`);
+      return void 0;
+    }
+  }
   openAILog.trace({ image });
   return image.data[0]?.b64_json;
 }
@@ -407,6 +482,9 @@ var ImagePlugin = class extends PluginBase {
       this.log.error(`The input was:
 
 ${args.imageDescription}`);
+      aiResponse.message += `
+${e.message}
+The input was:${args.imageDescription}`;
     }
     return aiResponse;
   }
@@ -485,6 +563,17 @@ var MessageCollectPlugin = class extends PluginBase {
       }
     }
     return result;
+  }
+};
+
+// src/plugins/UnuseImagesPlugin.ts
+var UnuseImagesPlugin = class extends PluginBase {
+  name = process.env["MATTERMOST_BOTNAME"] || "@chatgpt";
+  async runPlugin(_args, _msgData) {
+    return {
+      message: "No use images! :stop_sign:\n```" + this.name + " left the conversation.```",
+      props: { bot_images: "stopped" }
+    };
   }
 };
 
@@ -719,7 +808,9 @@ var plugins2 = [
   new GraphPlugin("graph-plugin", "Generate a graph based on a given description or topic"),
   new ImagePlugin("image-plugin", "Generates an image based on a given image description."),
   new ExitPlugin("exit-plugin", "Says goodbye to the user and wish him a good day."),
-  new MessageCollectPlugin("message-collect-plugin", "Collects messages in the thread for a specific user or time")
+  new MessageCollectPlugin("message-collect-plugin", "Collects messages in the thread for a specific user or time"),
+  new UnuseImagesPlugin("unuse-images-plugin", 'Ignore images when asked to "ignore images".')
+  // 画像を無視してGPT-4に戻す まだGPT-4Vではfunction使えないけどね
 ];
 var botInstructions = "Your name is " + name + " and you are a helpful assistant. Whenever users asks you for help you will provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the meta data of the messages.";
 async function onClientMessage(msg, meId) {
@@ -743,10 +834,10 @@ async function onClientMessage(msg, meId) {
       content: botInstructions
     }
   ];
-  await appendThreadPosts(posts, meId, chatmessages);
+  await appendThreadPosts(posts, meId, chatmessages, isUnuseImages(meId, posts));
   await postMessage(msgData, chatmessages);
 }
-async function appendThreadPosts(posts, meId, chatmessages) {
+async function appendThreadPosts(posts, meId, chatmessages, unuseImages) {
   for (const threadPost of posts) {
     matterMostLog.trace({ msg: threadPost });
     if (threadPost.user_id === meId) {
@@ -756,24 +847,29 @@ async function appendThreadPosts(posts, meId, chatmessages) {
         content: threadPost.props.originalMessage ?? threadPost.message
       });
     } else {
-      if (threadPost.metadata.files?.length > 0 || threadPost.metadata.images) {
+      if (!unuseImages && (threadPost.metadata.files?.length > 0 || threadPost.metadata.images)) {
         const content = [{ type: "text", text: threadPost.message }];
-        await Promise.all(
-          threadPost.metadata.files.map(async (file) => {
-            const originalUrl = await mmClient.getFileUrl(file.id, NaN);
-            const url = await getBase64Image(originalUrl);
-            if (url) {
-              content.push(
-                { type: "image_url", image_url: { url } }
-                //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
-              );
-            }
-          })
-        );
+        if (threadPost.metadata.files) {
+          await Promise.all(
+            threadPost.metadata.files.map(async (file) => {
+              const originalUrl = await mmClient.getFileUrl(file.id, NaN);
+              const url = await getBase64Image(originalUrl, mmClient.getToken());
+              if (url) {
+                content.push(
+                  { type: "image_url", image_url: { url } }
+                  //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
+                );
+              }
+            })
+          );
+        }
         if (threadPost.metadata.images) {
-          Object.keys(threadPost.metadata.images).forEach((url) => {
-            content.push({ type: "image_url", image_url: { url } });
-          });
+          await Promise.all(
+            Object.keys(threadPost.metadata.images).map(async (url) => {
+              url = await getBase64Image(url, mmClient.getToken());
+              content.push({ type: "image_url", image_url: { url } });
+            })
+          );
         }
         chatmessages.push({
           role: "user",
@@ -790,14 +886,15 @@ async function appendThreadPosts(posts, meId, chatmessages) {
     }
   }
 }
-async function getBase64Image(url) {
-  const token = mmClient.getToken();
-  const response = await fetch(url, {
-    headers: {
+async function getBase64Image(url, token = "") {
+  const init = {};
+  if (token) {
+    init.headers = {
       Authorization: `Bearer ${token}`
       // Add the Authentication header here
-    }
-  });
+    };
+  }
+  const response = await fetch(url, init);
   if (!response.ok) {
     matterMostLog.error(`Fech Image URL HTTP error! status: ${response.status}`);
     return "";
@@ -837,7 +934,7 @@ async function isMessageIgnored(msgData, meId, previousPosts) {
   const channelId = msgData.post.channel_id;
   const channel = await mmClient.getChannel(channelId);
   const members = await mmClient.getChannelMembers(channelId);
-  if (channel.type === "D" && members.length === 2 && members.find((member) => member.user_id === meId)) {
+  if (channel.type === "D" && msgData.post.root_id === "" && members.length === 2 && members.find((member) => member.user_id === meId)) {
     return false;
   } else {
     if (msgData.post.root_id === "" && !msgData.mentions.includes(meId)) {
@@ -854,9 +951,21 @@ async function isMessageIgnored(msgData, meId, previousPosts) {
   }
   return true;
 }
+function isUnuseImages(meId, previousPosts) {
+  for (let i = previousPosts.length - 1; i >= 0; i--) {
+    if (previousPosts[i].props.bot_images === "stopped") {
+      return true;
+    }
+    if (previousPosts[i].user_id === meId || previousPosts[i].message.includes(name)) {
+      return false;
+    }
+  }
+  return false;
+}
 function parseMessageData(msg) {
   return {
     mentions: JSON.parse(msg.mentions ?? "[]"),
+    // MattermostがちまよっていたらJSON.parseで例外でるかもしれない
     post: JSON.parse(msg.post),
     sender_name: msg.sender_name
   };
