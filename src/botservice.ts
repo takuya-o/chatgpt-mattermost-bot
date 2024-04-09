@@ -27,8 +27,9 @@ if (!global.FormData) {
 
 const name = process.env['MATTERMOST_BOTNAME'] || '@chatgpt'
 const contextMsgCount = Number(process.env['BOT_CONTEXT_MSG'] ?? 100)
-export const SYSTEM_MESSAGE_HEADER = '// BOT System Message: '
-export const LIMIT_TOKENS = Number(process.env['MAX_PROMPT_TOKENS'] ?? 2000)
+const additionalBotInstructions = process.env['BOT_INSTRUCTION'] || "You are a helpful assistant. Whenever users asks you for help you will " +
+    "provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the " +
+    "meta data of the messages."
 
 /* List of all registered plugins */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -41,12 +42,8 @@ const plugins: PluginBase<any>[] = [
 ]
 
 /* The main system instruction for GPT */
-const botInstructions =
-  'Your name is ' +
-  name +
-  ' and you are a helpful assistant. Whenever users asks you for help you will ' +
-  "provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the " +
-  'meta data of the messages.'
+const botInstructions = "Your name is " + name + ". " + additionalBotInstructions
+botLog.debug({botInstructions: botInstructions})
 
 async function onClientMessage(msg: WebSocketMessage<JSONMessageData>, meId: string) {
   if ((msg.event !== 'posted' && msg.event !== 'post_edited') || !meId) {

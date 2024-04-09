@@ -1,7 +1,6 @@
 {
   "name": "chatgpt-mattermost-bot",
-  "version": "2.1.2",
-  "description": "ChatGPT bot on mattermost",
+  "version": "2.3.0",
   "private": true,
   "keywords": [
     "chatgpt",

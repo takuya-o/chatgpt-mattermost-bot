@@ -4,9 +4,13 @@ import { PluginBase } from './plugins/PluginBase.js'
 
 import { openAILog as log } from './logging.js'
 
-const apiKey = process.env['OPENAI_API_KEY']
-const azureOpenAiApiKey = process.env['AZURE_OPENAI_API_KEY']
-const azureOpenAiApiVersion = process.env['AZURE_OPENAI_API_VERSION'] ?? '2023-09-01-preview'
+const apiKey = process.env['OPENAI_API_KEY'];
+const basePath = process.env['OPENAI_API_BASE'];
+log.trace({apiKey, basePath})
+
+const configuration = new Configuration({ apiKey, basePath })
+
+const openai = new OpenAIApi(configuration)
 
 const model = process.env['OPENAI_MODEL_NAME'] ?? 'gpt-3.5-turbo'
 const MAX_TOKENS = Number(process.env['OPENAI_MAX_TOKENS'] ?? 2000)
