@@ -1,0 +1,78 @@
+version: 1
+# npx prh initより
+# https://github.com/prh/rules
+# おすすめは media/techbooster.yml です。
+
+# 別の設定ファイルを読み込み、mergeすることもできます。
+imports:
+  # - ./prh-rules/media/techbooster.yml
+  # - ./prh-rules/files/markdown.yml
+  # - ./prh-rules/files/review.yml
+  - path: ./node_modules/prh/prh-rules/media/techbooster.yml
+    ignoreRules:
+      - expected: （$1）
+        pattern: /\((.+?)\)/gmu
+        options:
+          wordBoundary: false
+        specs:
+          - from: そうですね(笑)
+            to: そうですね（笑）
+          - from: '(@<fn>{test})'
+            to: '（@<fn>{test}）'
+          - from: (ほげ)ほげ)
+            to: （ほげ）ほげ)
+        #prh: 半角カッコの代わりに全角カッコを使うこと。文字のバランスが崩れるためです
+  - ./node_modules/prh/prh-rules/files/markdown.yml
+
+  # imports にはいくつかのオプションが指定できる
+  # - path: other-rules.yml
+  # 連鎖的なimportを禁止する
+  # disableImports: true
+  # importするルールで不都合なものは殺すことができる
+  # patternやexpectedに指定する文字列は --rules-yaml で得られるパース後の表現を使うこと
+  # ignoreRules:
+  # pattern: /a/ と等価
+  # - /a/
+  # - pattern:  /a/
+  # - expected: /b/
+rules:
+  # - expected: Docker
+  #   pattern: docker
+  #   specs:
+  #     - from: docker
+  #       to: Docker
+  - expected: Ansible
+    pattern: ansible
+  - expected: Ansistrano
+    pattern: ansistrano
+  - expected: Kubernetes
+    pattern: kubernetes
+  - expected: React
+    pattern: react
+  - expected: Redux
+    pattern: redux
+  - expected: Next.js
+    patterns:
+      - next.js
+      - Nextjs
+  - expected: Nuxt.js
+    patterns:
+      - nuxt.js
+      - Nuxtjs
+  - expected: Vue.js
+    patterns:
+      - vue.js
+      - Vuejs
+  - expected: Node.js
+    patterns:
+      - node.js
+      - Nodejs
+  - expected: OpenAI
+    patterns:
+      - openai
+      - Openai
+      - Open AI
+  - expected: GCP
+    patterns:
+      - gcp
+      - Gcp

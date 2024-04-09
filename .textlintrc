@@ -1,0 +1,63 @@
+// see: https://www.forcia.com/blog/002374.html
+{
+  "plugins": {
+    "@textlint/markdown": {
+      "extensions": [".md"], // マークダウン用の拡張
+    }
+  },
+  "filters": {},
+  "rules": {
+    // https://github.com/textlint-rule/textlint-rule-prh
+    "prh": { // 文字揺れ校正 prhをプラグインで使う
+      "checkBlockQuote": true,
+      "checkEmphasis": true,
+      "rulePaths": ["./prh.yml"],
+    },
+    // textlint-rule-preset-jtf-styleの設定
+    "preset-jtf-style": {
+      "1.2.1.句点(。)と読点(、)": false, // 文中のピリオドとカンマを許容
+      //"1.1.3.箇条書き": false, // 箇条書きの文末に句点(。)以外を許可
+      //"2.1.8.算用数字": false, // 算用数字以外も許容する。1桁は全角でも入力できるように。
+      "2.2.1.ひらがなと漢字の使い分け": true, // ひらがなにしたほうが良い漢字をサジェスト
+      "4.1.3.ピリオド(.)、カンマ(,)": false, // 文中のピリオドとカンマを許容
+      "4.2.2.疑問符(？)": false, //半角:を許容
+      "4.2.7.コロン(：)": false, //半角:を許容
+      "4.3.1.丸かっこ（）": false, // 半角丸括弧を許容
+      "4.3.2.大かっこ［］": false, // 半角大括弧を許容
+    },
+    // textlint-rule-preset-ja-technical-writingの設定
+    // https://github.com/textlint-ja/textlint-rule-preset-ja-technical-writing
+    "preset-ja-technical-writing": {
+      "no-exclamation-question-mark": {
+        // https://github.com/textlint-rule/textlint-rule-no-exclamation-question-mark
+        // "allow": ["Yahoo!"],
+        "allowHalfWidthExclamation": true,
+        "allowHalfWidthQuestion": true,
+        "allowFullWidthExclamation": true,
+        "allowFullWidthQuestion": true,
+      },
+      "no-doubled-joshi": {
+        "strict": false,
+        "allow": ["か", "が", "に"], // これらの助詞は同一文中に多く登場しても許容
+      },
+      "max-ten": { "max": 5 }, // 文中の「、」の数は5個まで
+      "sentence-length": false, // 文の長さは指定なし
+      "ja-no-weak-phrase": false, // 弱い表現を許容
+      "max-comma": false, // カンマの数は指定なし
+    },
+    // textlint-rule-preset-ja-spacingの設定
+    "preset-ja-spacing": {
+      "ja-space-around-code": { // インラインコードの前後にスペースを入れなくてもよい
+        "before": false,
+        "after": false,
+      },  
+    },
+
+    // textlint init
+    "no-mixed-zenkaku-and-hankaku-alphabet": true,
+    //"preset-ja-spacing": true,
+    //"preset-ja-technical-writing": true,
+    //"preset-jtf-style": true,
+    //"prh": true
+  }
+}

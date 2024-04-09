@@ -1,6 +1,3 @@
-// src/botservice.ts
-import "isomorphic-fetch";
-
 // src/logging.ts
 import { Log } from "debug-level";
 Log.options({ json: true, colors: true });
@@ -91,11 +88,221 @@ import FormData3 from "form-data";
 // src/plugins/GraphPlugin.ts
 import FormData from "form-data";
 
-// src/openai-wrapper.ts
+// src/AIProvider.ts
+import { CohereClient } from "cohere-ai";
+import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
+var OpenAIAdapter = class {
+  openai;
+  baseURL;
+  constructor(openaiArgs) {
+    this.openai = new OpenAI(openaiArgs);
+    this.baseURL = this.openai.baseURL;
+  }
+  async createMessage(options) {
+    return this.openai.chat.completions.create(options);
+  }
+  async imagesGenerate(imageGeneratePrams) {
+    return this.openai.images.generate(imageGeneratePrams);
+  }
+};
+var AnthropicAdapter = class {
+  anthropic;
+  baseURL;
+  constructor(args) {
+    this.anthropic = new Anthropic(args);
+    this.baseURL = this.anthropic.baseURL;
+  }
+  async createMessage(options) {
+    const completion = await this.anthropic.messages.create(
+      options
+    );
+    return this.mapAnthropicMessageToOpenAICompletion(completion);
+  }
+  mapAnthropicMessageToOpenAICompletion(completion) {
+    const choices = [
+      { message: completion }
+    ];
+    const usage = {
+      //トータルトークン無いし属性名も違うの詰め替える
+      prompt_tokens: completion.usage.input_tokens,
+      completion_tokens: completion.usage.output_tokens,
+      total_tokens: completion.usage.input_tokens + completion.usage.output_tokens
+    };
+    return {
+      choices,
+      usage,
+      model: completion.model,
+      id: completion.id,
+      role: completion.role
+    };
+  }
+  async imagesGenerate(_imageGeneratePrams) {
+    throw new Error("Anthropic does not support image generation.");
+  }
+};
+var CohereAdapter = class {
+  cohere;
+  baseURL;
+  constructor(args) {
+    this.cohere = new CohereClient({ token: args?.apiKey });
+    this.baseURL = "https://api.cohere.ai/";
+  }
+  async createMessage(options) {
+    const chat = await this.cohere.chat(this.mapOpenAIOptionsToCohereOptions(options));
+    openAILog.debug("Cohere chat() response: ", chat);
+    return this.mapOpenAICompletion(chat, options.model);
+  }
+  mapOpenAICompletion(chat, model2) {
+    const choices = [
+      {
+        finish_reason: "stop",
+        index: 0,
+        logprobs: null,
+        //ログ確率情報
+        message: {
+          role: "assistant",
+          content: chat.text
+        }
+      }
+    ];
+    const inputTokens = chat.meta.billed_units.input_tokens;
+    const outputTokens = chat.meta.billed_units.output_tokens;
+    return {
+      id: "",
+      created: 0,
+      object: "chat.completion",
+      //OputAI固定値
+      choices,
+      usage: {
+        prompt_tokens: inputTokens,
+        completion_tokens: outputTokens,
+        total_tokens: inputTokens + outputTokens
+      },
+      model: model2
+    };
+  }
+  mapOpenAIOptionsToCohereOptions(options) {
+    const chatRequest = {
+      model: options.model,
+      message: this.getUserMessage(this.getLastMessage(options.messages)),
+      //最後のメッセージがユーザのメッセージ
+      temperature: options.temperature ?? void 0,
+      maxTokens: options.max_tokens ?? void 0,
+      p: options.top_p ?? void 0,
+      tools: this.getTools(options.tools),
+      chatHistory: this.getChatHistory(options.messages)
+    };
+    return chatRequest;
+  }
+  // OpenAIのUserロールからメッセージを取り出す
+  getLastMessage(messages) {
+    return messages.pop();
+  }
+  getUserMessage(openAImessage) {
+    if (!openAImessage) {
+      return "";
+    }
+    let message = "";
+    if (openAImessage.content) {
+      if (typeof openAImessage.content === "string") {
+        message = openAImessage.content;
+      } else {
+        openAImessage.content.forEach((content) => {
+          const contentPartText = content;
+          if (contentPartText.type === "text") {
+            message += contentPartText.text;
+          } else {
+            const conteentPartImage = content;
+            openAILog.debug(
+              "Not support man image_url",
+              conteentPartImage.type,
+              shortenString(conteentPartImage.image_url.url)
+            );
+          }
+        });
+      }
+    }
+    openAILog.debug("Cohere message", message);
+    return message;
+  }
+  getTools(tools) {
+    if (!tools || tools.length < 0) {
+      return void 0;
+    }
+    const cohereTools = [];
+    tools.forEach((tool) => {
+      let parameterDefinitions;
+      if (tool.function.parameters) {
+        parameterDefinitions = {};
+        for (const paramKey in tool.function.parameters) {
+          const param = tool.function.parameters[paramKey];
+          parameterDefinitions[param.name] = {
+            type: param.type,
+            description: param.description,
+            required: param.required
+          };
+        }
+      }
+      cohereTools.push({
+        description: tool.function.description ?? "",
+        name: tool.function.name,
+        parameterDefinitions
+      });
+    });
+    openAILog.debug("Cohere tools", cohereTools);
+    return cohereTools;
+  }
+  getChatHistory(messages) {
+    if (messages.length < 1) {
+      return void 0;
+    }
+    const chatHistory = [];
+    messages.forEach((message) => {
+      if (message.role === "user") {
+        chatHistory.push({
+          role: "USER",
+          message: this.getUserMessage(message)
+        });
+      } else if (message.role === "system") {
+        chatHistory.push({
+          role: "SYSTEM",
+          message: message.content
+        });
+      } else if (message.role === "assistant") {
+        chatHistory.push({
+          role: "CHATBOT",
+          message: message.content ?? ""
+        });
+      } else {
+        openAILog.debug("getChatHistory(): ${message.role} not yet support.", message);
+      }
+    });
+    openAILog.debug("Cohere chat history", chatHistory);
+    return chatHistory;
+  }
+  async imagesGenerate(_imageGeneratePrams) {
+    throw new Error("Cohere does not support image generation.");
+  }
+};
+function shortenString(text) {
+  if (!text) {
+    return text;
+  }
+  if (text.length < 1024) {
+    return text;
+  }
+  return text.substring(0, 1023) + "...";
+}
+
+// src/openai-wrapper.ts
 var apiKey = process.env["OPENAI_API_KEY"];
 var azureOpenAiApiKey = process.env["AZURE_OPENAI_API_KEY"];
-var azureOpenAiApiVersion = process.env["AZURE_OPENAI_API_VERSION"] ?? "2023-09-01-preview";
+var azureOpenAiApiVersion = process.env["AZURE_OPENAI_API_VERSION"] ?? "2024-03-01-preview";
+var anthropicApiKey = process.env["ANTHROPIC_API_KEY"];
+var cohereApiKey = process.env["COHERE_API_KEY"];
+var basePath = process.env["OPENAI_API_BASE"];
+openAILog.trace({ basePath });
 var model = process.env["OPENAI_MODEL_NAME"] ?? "gpt-3.5-turbo";
 var MAX_TOKENS = Number(process.env["OPENAI_MAX_TOKENS"] ?? 2e3);
 var temperature = Number(process.env["OPENAI_TEMPERATURE"] ?? 1);
@@ -103,57 +310,65 @@ var azureOpenAiVisionApiKey = process.env["AZURE_OPENAI_API_VISION_KEY"];
 var visionModel = process.env["OPENAI_VISION_MODEL_NAME"];
 var azureOpenAiImageApiKey = process.env["AZURE_OPENAI_API_IMAGE_KEY"];
 var imageModel = process.env["OPENAI_IMAGE_MODEL_NAME"] ?? "dall-e-3";
-if (!apiKey && !azureOpenAiApiKey) {
-  openAILog.error("OPENAI_API_KEY or AZURE_OPENAI_API_KEY is not set");
+if (!apiKey && !azureOpenAiApiKey && !anthropicApiKey && !cohereApiKey) {
+  openAILog.error("OPENAI_API_KEY, AZURE_OPENAI_API_KEY, ANTHROPIC_API_KEY, COHERE_API_KEY is not set");
   process.exit(1);
 }
-openAILog.debug({ model, max_tokens: MAX_TOKENS, temperature });
-var config = { apiKey };
+var config = { apiKey, baseURL: basePath };
 if (azureOpenAiApiKey) {
+  model = process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"] ?? "gpt-35-turbo";
   config = {
     apiKey: azureOpenAiApiKey,
-    baseURL: `https://${process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai/deployments/${process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"] ?? "gpt-35-turbo"}`,
+    baseURL: `https://${process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai/deployments/${model}`,
     defaultQuery: { "api-version": azureOpenAiApiVersion },
     defaultHeaders: { "api-key": azureOpenAiApiKey }
   };
 }
-var openai = new OpenAI(config);
+var openai = anthropicApiKey ? new AnthropicAdapter({ apiKey: anthropicApiKey }) : cohereApiKey ? new CohereAdapter({ apiKey: cohereApiKey }) : new OpenAIAdapter(config);
+openAILog.debug(`OpenAI ${openai?.baseURL}`);
 var openaiImage = openai;
 if (azureOpenAiApiKey || azureOpenAiImageApiKey) {
   if (!apiKey || azureOpenAiImageApiKey) {
-    openaiImage = new OpenAI({
+    imageModel = process.env["AZURE_OPENAI_API_IMAGE_DEPLOYMENT_NAME"] ?? imageModel;
+    config = {
       // Azureは東海岸(dall-e-2)やスエーデン(dall-e-3)しかDALL-Eが無いので新規に作る
       apiKey: azureOpenAiImageApiKey ?? azureOpenAiApiKey,
-      baseURL: `https://${process.env["AZURE_OPENAI_API_IMAGE_INSTANCE_NAME"] ?? process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai/deployments/${process.env["AZURE_OPENAI_API_IMAGE_DEPLOYMENT_NAME"] ?? process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"]}`,
+      baseURL: `https://${process.env["AZURE_OPENAI_API_IMAGE_INSTANCE_NAME"] ?? process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai/deployments/${imageModel}`,
       defaultQuery: { "api-version": azureOpenAiApiVersion },
       defaultHeaders: { "api-key": azureOpenAiImageApiKey ?? azureOpenAiApiKey }
-    });
+    };
+    openaiImage = new OpenAIAdapter(config);
   } else {
     if (azureOpenAiApiKey) {
-      openaiImage = new OpenAI({ apiKey });
+      openaiImage = new OpenAIAdapter({ apiKey });
     } else {
       openaiImage = openai;
     }
   }
 }
+openAILog.debug(`Image ${openaiImage.baseURL}`);
 var openaiVision = openai;
 if (azureOpenAiApiKey || azureOpenAiVisionApiKey) {
   if (!apiKey || azureOpenAiVisionApiKey) {
-    openaiVision = new OpenAI({
+    visionModel = process.env["AZURE_OPENAI_API_VISION_DEPLOYMENT_NAME"] ?? process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"];
+    config = {
       // Azureは、まだgpt-4Vないけど将来のため準備
       apiKey: azureOpenAiVisionApiKey ?? azureOpenAiApiKey,
-      baseURL: `https://${process.env["AZURE_OPENAI_API_VISION_INSTANCE_NAME"] ?? process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai/deployments/${process.env["AZURE_OPENAI_API_VISION_DEPLOYMENT_NAME"] ?? process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"]}`,
+      baseURL: `https://${process.env["AZURE_OPENAI_API_VISION_INSTANCE_NAME"] ?? process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai/deployments/${visionModel}`,
       defaultQuery: { "api-version": azureOpenAiApiVersion },
       defaultHeaders: { "api-key": azureOpenAiVisionApiKey ?? azureOpenAiApiKey }
-    });
+    };
+    openaiVision = new OpenAIAdapter(config);
   } else {
     if (azureOpenAiApiKey && azureOpenAiImageApiKey) {
-      openaiVision = new OpenAI({ apiKey });
+      openaiVision = new OpenAIAdapter({ apiKey });
     } else {
       openaiVision = openai;
     }
   }
 }
+openAILog.debug(`Vision ${openaiVision.baseURL}`);
+openAILog.debug("Models and parameters: ", { model, visionModel, imageModel, max_tokens: MAX_TOKENS, temperature });
 var plugins = /* @__PURE__ */ new Map();
 var functions = [];
 function registerChatPlugin(plugin) {
@@ -169,6 +384,25 @@ function registerChatPlugin(plugin) {
   });
 }
 async function continueThread(messages, msgData) {
+  openAILog.trace(
+    "messsages: ",
+    JSON.parse(JSON.stringify(messages)).map(
+      //シリアライズでDeep Copy
+      (message) => {
+        if (typeof message.content !== "string") {
+          message.content?.map((content) => {
+            const url = shortenString(content.image_url?.url);
+            if (url) {
+              ;
+              content.image_url.url = url;
+            }
+            return content;
+          });
+        }
+        return message;
+      }
+    )
+  );
   let aiResponse = {
     message: "Sorry, but it seems I found no valid response.",
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
@@ -179,7 +413,6 @@ async function continueThread(messages, msgData) {
   let isIntermediateResponse = true;
   while (isIntermediateResponse && maxChainLength-- > 0) {
     const { responseMessage, usage, model: model2 } = await createChatCompletion(messages, functions);
-    openAILog.trace(responseMessage);
     if (responseMessage) {
       aiResponse.model += model2 + " ";
       if (usage && aiResponse.usage) {
@@ -260,14 +493,16 @@ async function createChatCompletion(messages, functions2 = void 0) {
   let tools = false;
   let currentOpenAi = openai;
   let currentModel = model;
-  if (visionModel) {
+  if (anthropicApiKey) {
+    tools = true;
+  } else if (visionModel) {
     messages.some((message) => {
       if (typeof message.content !== "string") {
         tools = true;
         if (openaiVision) {
           currentOpenAi = openaiVision;
         }
-        currentModel = visionModel;
+        currentModel = visionModel || currentModel;
         return true;
       }
     });
@@ -286,16 +521,22 @@ async function createChatCompletion(messages, functions2 = void 0) {
       chatCompletionOptions.function_call = "auto";
     }
   }
-  openAILog.trace(
-    chatCompletionOptions.model,
-    chatCompletionOptions.max_tokens,
-    chatCompletionOptions.temperature,
-    chatCompletionOptions.functions,
-    chatCompletionOptions.function_call
-  );
-  const chatCompletion = await currentOpenAi.chat.completions.create(chatCompletionOptions);
+  openAILog.trace("chat.completions.create() Parameters", {
+    model: chatCompletionOptions.model,
+    max_tokens: chatCompletionOptions.max_tokens,
+    temperature: chatCompletionOptions.temperature,
+    function_call: chatCompletionOptions.function_call,
+    functions: chatCompletionOptions.functions?.map((func) => func.name),
+    tools_choice: chatCompletionOptions.tool_choice,
+    tools: chatCompletionOptions.tools?.map((tool) => tool.type + " " + tool.function.name)
+  });
+  const chatCompletion = await currentOpenAi.createMessage(chatCompletionOptions);
   openAILog.trace({ chatCompletion });
-  return { responseMessage: chatCompletion.choices?.[0]?.message, usage: chatCompletion.usage, model: currentModel };
+  return {
+    responseMessage: chatCompletion.choices?.[0]?.message,
+    usage: chatCompletion.usage,
+    model: chatCompletion.model
+  };
 }
 async function createImage(prompt) {
   const createImageOptions = {
@@ -311,7 +552,7 @@ async function createImage(prompt) {
   openAILog.trace({ createImageOptions });
   let image;
   if (!azureOpenAiImageApiKey || imageModel !== "dall-e-2") {
-    image = await openaiImage.images.generate(createImageOptions);
+    image = await openaiImage.imagesGenerate(createImageOptions);
   } else {
     const url = `https://${process.env["AZURE_OPENAI_API_IMAGE_INSTANCE_NAME"] ?? process.env["AZURE_OPENAI_API_INSTANCE_NAME"]}.openai.azure.com/openai/images/generate:submit?api-version=${azureOpenAiApiVersion}`;
     const headers = { "api-key": azureOpenAiImageApiKey ?? "", "Content-Type": "application/json" };
@@ -342,7 +583,14 @@ async function createImage(prompt) {
       return void 0;
     }
   }
-  openAILog.trace({ image });
+  const dataTmp = image.data[0]?.b64_json;
+  if (dataTmp) {
+    image.data[0].b64_json = shortenString(image.data[0].b64_json);
+  }
+  openAILog.trace("images.generate", { image });
+  if (dataTmp) {
+    image.data[0].b64_json = dataTmp;
+  }
   return image.data[0]?.b64_json;
 }
 
@@ -595,7 +843,6 @@ async function postMessage(msgData, messages) {
   let answer = "";
   let { sumMessagesCount, messagesCount } = calcMessagesTokenCount(messages);
   try {
-    botLog.trace({ chatmessages: messages });
     let systemMessage = SYSTEM_MESSAGE_HEADER;
     ({
       messages,
@@ -735,7 +982,6 @@ ${SYSTEM_MESSAGE_HEADER} `;
   }
 }
 async function newPost(answer, post, fileId, props) {
-  botLog.trace({ answer });
   const newPost2 = await mmClient.createPost({
     message: answer,
     channel_id: post.channel_id,
@@ -743,12 +989,13 @@ async function newPost(answer, post, fileId, props) {
     root_id: post.root_id || post.id,
     file_ids: fileId ? [fileId] : void 0
   });
-  botLog.trace({ msg: newPost2 });
+  botLog.trace({ newPost: newPost2 });
 }
 function calcMessagesTokenCount(messages) {
   let sumMessagesCount = 0;
   const messagesCount = new Array(messages.length);
   messages.forEach((message, i) => {
+    messagesCount[i] = 0;
     if (typeof message.content === "string" && message.content.length > 0) {
       messagesCount[i] = tokenCount(message.content);
     } else if (typeof message.content === "object" && message.content) {
@@ -804,15 +1051,20 @@ var name = process.env["MATTERMOST_BOTNAME"] || "@chatgpt";
 var contextMsgCount = Number(process.env["BOT_CONTEXT_MSG"] ?? 100);
 var SYSTEM_MESSAGE_HEADER = "// BOT System Message: ";
 var LIMIT_TOKENS = Number(process.env["MAX_PROMPT_TOKENS"] ?? 2e3);
+var additionalBotInstructions = process.env["BOT_INSTRUCTION"] || "You are a helpful assistant. Whenever users asks you for help you will provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the meta data of the messages.";
 var plugins2 = [
   new GraphPlugin("graph-plugin", "Generate a graph based on a given description or topic"),
   new ImagePlugin("image-plugin", "Generates an image based on a given image description."),
   new ExitPlugin("exit-plugin", "Says goodbye to the user and wish him a good day."),
-  new MessageCollectPlugin("message-collect-plugin", "Collects messages in the thread for a specific user or time"),
+  new MessageCollectPlugin(
+    "message-collect-plugin",
+    "NONEED: Collects messages in the thread for a specific user or time"
+  ),
   new UnuseImagesPlugin("unuse-images-plugin", 'Ignore images when asked to "ignore images".')
   // 画像を無視してGPT-4に戻す まだGPT-4Vではfunction使えないけどね
 ];
-var botInstructions = "Your name is " + name + " and you are a helpful assistant. Whenever users asks you for help you will provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the meta data of the messages.";
+var botInstructions = "Your name is " + name + ". " + additionalBotInstructions;
+botLog.debug({ botInstructions });
 async function onClientMessage(msg, meId) {
   if (msg.event !== "posted" && msg.event !== "post_edited" || !meId) {
     matterMostLog.debug("Event not posted ", msg.event, { msg });
@@ -826,7 +1078,7 @@ async function onClientMessage(msg, meId) {
   if (await isMessageIgnored(msgData, meId, posts)) {
     return;
   }
-  botLog.trace({ threadPosts: posts });
+  matterMostLog.trace({ threadPosts: posts });
   const chatmessages = [
     {
       role: "system",
@@ -839,7 +1091,6 @@ async function onClientMessage(msg, meId) {
 }
 async function appendThreadPosts(posts, meId, chatmessages, unuseImages) {
   for (const threadPost of posts) {
-    matterMostLog.trace({ msg: threadPost });
     if (threadPost.user_id === meId) {
       chatmessages.push({
         role: "assistant",
@@ -894,9 +1145,12 @@ async function getBase64Image(url, token = "") {
       // Add the Authentication header here
     };
   }
-  const response = await fetch(url, init);
+  const response = await fetch(url, init).catch((error) => {
+    matterMostLog.error(`Fech Exception! url: ${url}`, error);
+    return { ok: false };
+  });
   if (!response.ok) {
-    matterMostLog.error(`Fech Image URL HTTP error! status: ${response.status}`);
+    botLog.error(`Fech Image URL HTTP error! status: ${response?.status}`);
     return "";
   }
   let buffer = Buffer.from(await response.arrayBuffer());

@@ -68,7 +68,7 @@ export class ImagePlugin extends PluginBase<ImagePluginArgs> {
       },
     ]
 
-    const response = await createChatCompletion(messages)
+    const response = await createChatCompletion(messages) //TODO トークン数の記録
     return response?.responseMessage?.content
   }
 

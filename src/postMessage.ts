@@ -20,7 +20,7 @@ export async function postMessage(
   let answer = ''
   let { sumMessagesCount, messagesCount } = calcMessagesTokenCount(messages) //全体トークン数カウント
   try {
-    botLog.trace({ chatmessages: messages })
+    //イメージ入っていると長い botLog.trace({ chatmessages: messages })
     let systemMessage = SYSTEM_MESSAGE_HEADER
     ;({
       messages,
@@ -180,7 +180,7 @@ async function newPost(
   fileId: string | undefined,
   props: Record<string, string> | undefined,
 ) {
-  botLog.trace({ answer })
+  // botLog.trace({ answer })
   const newPost = await mmClient.createPost({
     message: answer,
     channel_id: post.channel_id,
@@ -188,12 +188,13 @@ async function newPost(
     root_id: post.root_id || post.id,
     file_ids: fileId ? [fileId] : undefined,
   } as Post)
-  botLog.trace({ msg: newPost })
+  botLog.trace({ newPost })
 }
 function calcMessagesTokenCount(messages: Array<OpenAI.Chat.ChatCompletionMessageParam>) {
   let sumMessagesCount = 0
   const messagesCount = new Array<number>(messages.length)
   messages.forEach((message: OpenAI.Chat.ChatCompletionMessageParam, i) => {
+    messagesCount[i] = 0
     if (typeof message.content === 'string' && message.content.length > 0) {
       messagesCount[i] = tokenCount(message.content)
     } else if (typeof message.content === 'object' && message.content) {

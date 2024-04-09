@@ -1,107 +1,111 @@
+import { AIProvider, AnthropicAdapter, CohereAdapter, OpenAIAdapter, OpenAiArgs, shortenString } from './AIProvider'
 import { AiResponse, MattermostMessageData } from './types.js'
 import OpenAI from 'openai'
 import { PluginBase } from './plugins/PluginBase.js'
 
 import { openAILog as log } from './logging.js'
 
-const apiKey = process.env['OPENAI_API_KEY'];
-const basePath = process.env['OPENAI_API_BASE'];
-log.trace({apiKey, basePath})
+const apiKey = process.env['OPENAI_API_KEY']
+const azureOpenAiApiKey = process.env['AZURE_OPENAI_API_KEY']
+const azureOpenAiApiVersion = process.env['AZURE_OPENAI_API_VERSION'] ?? '2024-03-01-preview'
+const anthropicApiKey = process.env['ANTHROPIC_API_KEY']
+const cohereApiKey = process.env['COHERE_API_KEY']
+const basePath = process.env['OPENAI_API_BASE']
+log.trace({ basePath })
 
-const configuration = new Configuration({ apiKey, basePath })
-
-const openai = new OpenAIApi(configuration)
-
-const model = process.env['OPENAI_MODEL_NAME'] ?? 'gpt-3.5-turbo'
+let model = process.env['OPENAI_MODEL_NAME'] ?? 'gpt-3.5-turbo'
 const MAX_TOKENS = Number(process.env['OPENAI_MAX_TOKENS'] ?? 2000)
 const temperature = Number(process.env['OPENAI_TEMPERATURE'] ?? 1)
 
 const azureOpenAiVisionApiKey = process.env['AZURE_OPENAI_API_VISION_KEY']
-const visionModel = process.env['OPENAI_VISION_MODEL_NAME'] //Recommend 'gpt-4-vision-preview'
+let visionModel = process.env['OPENAI_VISION_MODEL_NAME'] //Recommend 'gpt-4-vision-preview'
 
 const azureOpenAiImageApiKey = process.env['AZURE_OPENAI_API_IMAGE_KEY']
-const imageModel = process.env['OPENAI_IMAGE_MODEL_NAME'] ?? 'dall-e-3'
+let imageModel = process.env['OPENAI_IMAGE_MODEL_NAME'] ?? 'dall-e-3'
 
 // log.trace({ apiKey })
-if (!apiKey && !azureOpenAiApiKey) {
-  log.error('OPENAI_API_KEY or AZURE_OPENAI_API_KEY is not set')
+if (!apiKey && !azureOpenAiApiKey && !anthropicApiKey && !cohereApiKey) {
+  log.error('OPENAI_API_KEY, AZURE_OPENAI_API_KEY, ANTHROPIC_API_KEY, COHERE_API_KEY is not set')
   process.exit(1) //呼び出され丸まで落ちないのでrestartストリームにはならない
 }
-log.debug({ model, max_tokens: MAX_TOKENS, temperature })
 
-let config = { apiKey } as {
-  apiKey: string
-  baseURL?: string
-  defaultQuery?: Record<string, string>
-  defaultHeaders?: Record<string, string>
-}
+let config: OpenAiArgs = { apiKey, baseURL: basePath }
 
 // テキスト用のエンドポイントを用意する
 if (azureOpenAiApiKey) {
+  model = process.env['AZURE_OPENAI_API_DEPLOYMENT_NAME'] ?? 'gpt-35-turbo'
   config = {
     apiKey: azureOpenAiApiKey,
-    baseURL: `https://${process.env['AZURE_OPENAI_API_INSTANCE_NAME']}.openai.azure.com/openai/deployments/${
-      process.env['AZURE_OPENAI_API_DEPLOYMENT_NAME'] ?? 'gpt-35-turbo'
-    }`,
+    baseURL: `https://${process.env['AZURE_OPENAI_API_INSTANCE_NAME']}.openai.azure.com/openai/deployments/${model}`,
     defaultQuery: { 'api-version': azureOpenAiApiVersion },
     defaultHeaders: { 'api-key': azureOpenAiApiKey },
   }
 }
-const openai = new OpenAI(config)
+
+const openai: AIProvider = anthropicApiKey
+  ? new AnthropicAdapter({ apiKey: anthropicApiKey })
+  : cohereApiKey
+    ? new CohereAdapter({ apiKey: cohereApiKey })
+    : new OpenAIAdapter(config)
+log.debug(`OpenAI ${openai?.baseURL}`)
 
 // イメージ生成用のエンドポイントを用意する
-let openaiImage: OpenAI = openai
+let openaiImage: AIProvider = openai
 if (azureOpenAiApiKey || azureOpenAiImageApiKey) {
   // イメージ生成 DALL-E用のOpenAI APIは別のを使う
   if (!apiKey || azureOpenAiImageApiKey) {
     // OPENAI_API_KEY が設定されていいないかつAZURE_OPENAI_API_IMAGE_KEY が設定されているのでAzureを使う
-    openaiImage = new OpenAI({
+    imageModel = process.env['AZURE_OPENAI_API_IMAGE_DEPLOYMENT_NAME'] ?? imageModel
+    config = {
       // Azureは東海岸(dall-e-2)やスエーデン(dall-e-3)しかDALL-Eが無いので新規に作る
-      apiKey: azureOpenAiImageApiKey ?? azureOpenAiApiKey,
+      apiKey: (azureOpenAiImageApiKey ?? azureOpenAiApiKey) as string,
       baseURL: `https://${
         process.env['AZURE_OPENAI_API_IMAGE_INSTANCE_NAME'] ?? process.env['AZURE_OPENAI_API_INSTANCE_NAME']
-      }.openai.azure.com/openai/deployments/${
-        process.env['AZURE_OPENAI_API_IMAGE_DEPLOYMENT_NAME'] ?? process.env['AZURE_OPENAI_API_DEPLOYMENT_NAME']
-      }`,
+      }.openai.azure.com/openai/deployments/${imageModel}`,
       defaultQuery: { 'api-version': azureOpenAiApiVersion },
-      defaultHeaders: { 'api-key': azureOpenAiImageApiKey ?? azureOpenAiApiKey },
-    })
+      defaultHeaders: { 'api-key': (azureOpenAiImageApiKey ?? azureOpenAiApiKey) as string },
+    }
+    openaiImage = new OpenAIAdapter(config)
   } else {
     // OPENAI_API_KEY が設定されているのでImage APIは本家OpenAI APIを使う
     if (azureOpenAiApiKey) {
-      openaiImage = new OpenAI({ apiKey })
+      openaiImage = new OpenAIAdapter({ apiKey })
     } else {
       openaiImage = openai // すでに有る本家OpenAIのエンドポイントを使う
     }
   }
 }
+log.debug(`Image ${openaiImage.baseURL}`)
 
 // Vision用のエンドポイントを用意する
-let openaiVision: OpenAI = openai
+let openaiVision: AIProvider = openai
 if (azureOpenAiApiKey || azureOpenAiVisionApiKey) {
   // Vision用のOpenAI APIは別のを使う
   if (!apiKey || azureOpenAiVisionApiKey) {
     // OPENAI_API_KEY が設定されていいないかつAZURE_OPENAI_API_VISION_KEY が設定されているのでAzureを使う
-    openaiVision = new OpenAI({
+    visionModel =
+      process.env['AZURE_OPENAI_API_VISION_DEPLOYMENT_NAME'] ?? process.env['AZURE_OPENAI_API_DEPLOYMENT_NAME']
+    config = {
       // Azureは、まだgpt-4Vないけど将来のため準備
-      apiKey: azureOpenAiVisionApiKey ?? azureOpenAiApiKey,
+      apiKey: (azureOpenAiVisionApiKey ?? azureOpenAiApiKey) as string,
       baseURL: `https://${
         process.env['AZURE_OPENAI_API_VISION_INSTANCE_NAME'] ?? process.env['AZURE_OPENAI_API_INSTANCE_NAME']
-      }.openai.azure.com/openai/deployments/${
-        process.env['AZURE_OPENAI_API_VISION_DEPLOYMENT_NAME'] ?? process.env['AZURE_OPENAI_API_DEPLOYMENT_NAME']
-      }`,
+      }.openai.azure.com/openai/deployments/${visionModel}`,
       defaultQuery: { 'api-version': azureOpenAiApiVersion },
-      defaultHeaders: { 'api-key': azureOpenAiVisionApiKey ?? azureOpenAiApiKey },
-    })
+      defaultHeaders: { 'api-key': (azureOpenAiVisionApiKey ?? azureOpenAiApiKey) as string },
+    }
+    openaiVision = new OpenAIAdapter(config)
   } else {
     // Vision用のOpenAI APIは本家OpenAI APIを使う
     if (azureOpenAiApiKey && azureOpenAiImageApiKey) {
-      openaiVision = new OpenAI({ apiKey })
+      openaiVision = new OpenAIAdapter({ apiKey })
     } else {
       openaiVision = openai // すでに有る本家OpenAIのエンドポイントを使う
     }
   }
 }
+log.debug(`Vision ${openaiVision.baseURL}`)
+log.debug('Models and parameters: ', { model, visionModel, imageModel, max_tokens: MAX_TOKENS, temperature })
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const plugins: Map<string, PluginBase<any>> = new Map()
@@ -136,6 +140,26 @@ export async function continueThread(
   messages: OpenAI.Chat.ChatCompletionMessageParam[],
   msgData: MattermostMessageData,
 ): Promise<AiResponse> {
+  // 画像データのdata:image/png;base64 messages[].content.image_url.url
+  log.trace(
+    'messsages: ',
+    (JSON.parse(JSON.stringify(messages)) as OpenAI.Chat.ChatCompletionMessageParam[]).map(
+      //シリアライズでDeep Copy
+      message => {
+        if (typeof message.content !== 'string') {
+          // ログでは長いurlの文字列を短くする
+          message.content?.map(content => {
+            const url = shortenString((content as OpenAI.Chat.ChatCompletionContentPartImage).image_url?.url)
+            if (url) {
+              ;(content as OpenAI.Chat.ChatCompletionContentPartImage).image_url.url = url
+            }
+            return content
+          })
+        }
+        return message
+      },
+    ),
+  )
   let aiResponse: AiResponse = {
     message: 'Sorry, but it seems I found no valid response.',
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
@@ -151,7 +175,7 @@ export async function continueThread(
   let isIntermediateResponse = true
   while (isIntermediateResponse && maxChainLength-- > 0) {
     const { responseMessage, usage, model } = await createChatCompletion(messages, functions)
-    log.trace(responseMessage)
+    //chatCompletion.choices?.[0]?.messageで同じログが出ている log.trace("responseMessage: ", responseMessage)
     if (responseMessage) {
       aiResponse.model += model + ' '
       if (usage && aiResponse.usage) {
@@ -237,9 +261,10 @@ export async function continueThread(
  * @param messages The message history the response is created for.
  * @param functions Function calls which can be called by the openAI model
  */
+// eslint-disable-next-line max-lines-per-function
 export async function createChatCompletion(
   messages: OpenAI.Chat.ChatCompletionMessageParam[],
-  functions: OpenAI.Chat.ChatCompletionCreateParams.Function[] | undefined = undefined,
+  functions: OpenAI.Chat.ChatCompletionCreateParams.Function[] | undefined = undefined, //TODO: tools[]化
 ): Promise<{
   responseMessage: OpenAI.Chat.Completions.ChatCompletionMessage | undefined
   usage: OpenAI.CompletionUsage | undefined
@@ -249,7 +274,10 @@ export async function createChatCompletion(
   let tools = false
   let currentOpenAi = openai
   let currentModel = model
-  if (visionModel) {
+  if (anthropicApiKey) {
+    // Antrhopicもtoolsやfunctionsはない vision専用Modelもない
+    tools = true
+  } else if (visionModel) {
     messages.some((message: OpenAI.Chat.ChatCompletionMessageParam) => {
       if (typeof message.content !== 'string') {
         // 画像が入っていたので切り替え
@@ -257,7 +285,7 @@ export async function createChatCompletion(
         if (openaiVision) {
           currentOpenAi = openaiVision
         }
-        currentModel = visionModel
+        currentModel = visionModel || currentModel
         return true
       }
     })
@@ -273,28 +301,29 @@ export async function createChatCompletion(
       // visionモデルはfunctions使えない see: https://platform.openai.com/docs/guides/vision/introduction
       // // visionモデルはfunctionsでなくてtoolsなのでfuctnionsをtoolsに展開
       // chatCompletionOptions.tools = []
-      // functions?.forEach((funciton) => {
-      //   chatCompletionOptions.tools?.push({
-      //     type: 'function',
-      //     function: funciton
-      //   })
-      // })
+      // functions?.forEach(funciton => { chatCompletionOptions.tools?.push({type: 'function', function: funciton}) })
       // chatCompletionOptions.tool_choice = 'auto'
     } else {
-      chatCompletionOptions.functions = functions
+      chatCompletionOptions.functions = functions //TODO: tools化
       chatCompletionOptions.function_call = 'auto'
     }
   }
-  log.trace(
-    chatCompletionOptions.model,
-    chatCompletionOptions.max_tokens,
-    chatCompletionOptions.temperature,
-    chatCompletionOptions.functions,
-    chatCompletionOptions.function_call,
-  )
-  const chatCompletion = await currentOpenAi.chat.completions.create(chatCompletionOptions)
+  log.trace('chat.completions.create() Parameters', {
+    model: chatCompletionOptions.model,
+    max_tokens: chatCompletionOptions.max_tokens,
+    temperature: chatCompletionOptions.temperature,
+    function_call: chatCompletionOptions.function_call,
+    functions: chatCompletionOptions.functions?.map(func => func.name),
+    tools_choice: chatCompletionOptions.tool_choice,
+    tools: chatCompletionOptions.tools?.map(tool => tool.type + ' ' + tool.function.name),
+  })
+  const chatCompletion = await currentOpenAi.createMessage(chatCompletionOptions)
   log.trace({ chatCompletion })
-  return { responseMessage: chatCompletion.choices?.[0]?.message, usage: chatCompletion.usage, model: currentModel }
+  return {
+    responseMessage: chatCompletion.choices?.[0]?.message,
+    usage: chatCompletion.usage,
+    model: chatCompletion.model,
+  }
 }
 
 /**
@@ -314,7 +343,7 @@ export async function createImage(prompt: string): Promise<string | undefined> {
   let image: OpenAI.Images.ImagesResponse
   // AzureだけどOPENAI_IMAGE_MODELをしてくれていればDALL-E2の場合の特別な対応をする
   if (!azureOpenAiImageApiKey || imageModel !== 'dall-e-2') {
-    image = await openaiImage.images.generate(createImageOptions)
+    image = await openaiImage.imagesGenerate(createImageOptions)
   } else {
     // Azure OpenAIのdall-e-2の場合は非同期なので特別な対応が必要
     const url = `https://${
@@ -348,6 +377,13 @@ export async function createImage(prompt: string): Promise<string | undefined> {
       return undefined // 何らかのエラー
     }
   }
-  log.trace({ image })
-  return image.data[0]?.b64_json
+  const dataTmp = image.data[0]?.b64_json
+  if (dataTmp) {
+    image.data[0].b64_json = shortenString(image.data[0].b64_json)
+  }
+  log.trace('images.generate', { image })
+  if (dataTmp) {
+    image.data[0].b64_json = dataTmp
+  }
+  return image.data[0]?.b64_json // TODO revised_promptの利用
 }

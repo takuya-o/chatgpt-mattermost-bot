@@ -1,4 +1,4 @@
-import 'isomorphic-fetch'
+//import 'isomorphic-fetch'
 import { JSONMessageData, MattermostMessageData } from './types.js'
 import { botLog, matterMostLog } from './logging.js'
 import { mmClient, wsClient } from './mm-client.js'
@@ -27,9 +27,13 @@ if (!global.FormData) {
 
 const name = process.env['MATTERMOST_BOTNAME'] || '@chatgpt'
 const contextMsgCount = Number(process.env['BOT_CONTEXT_MSG'] ?? 100)
-const additionalBotInstructions = process.env['BOT_INSTRUCTION'] || "You are a helpful assistant. Whenever users asks you for help you will " +
+export const SYSTEM_MESSAGE_HEADER = '// BOT System Message: '
+export const LIMIT_TOKENS = Number(process.env['MAX_PROMPT_TOKENS'] ?? 2000)
+const additionalBotInstructions =
+  process.env['BOT_INSTRUCTION'] ||
+  'You are a helpful assistant. Whenever users asks you for help you will ' +
     "provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the " +
-    "meta data of the messages."
+    'meta data of the messages.'
 
 /* List of all registered plugins */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -37,13 +41,16 @@ const plugins: PluginBase<any>[] = [
   new GraphPlugin('graph-plugin', 'Generate a graph based on a given description or topic'),
   new ImagePlugin('image-plugin', 'Generates an image based on a given image description.'),
   new ExitPlugin('exit-plugin', 'Says goodbye to the user and wish him a good day.'),
-  new MessageCollectPlugin('message-collect-plugin', 'Collects messages in the thread for a specific user or time'),
+  new MessageCollectPlugin(
+    'message-collect-plugin',
+    'NONEED: Collects messages in the thread for a specific user or time',
+  ),
   new UnuseImagesPlugin('unuse-images-plugin', 'Ignore images when asked to "ignore images".'), // 画像を無視してGPT-4に戻す まだGPT-4Vではfunction使えないけどね
 ]
 
 /* The main system instruction for GPT */
-const botInstructions = "Your name is " + name + ". " + additionalBotInstructions
-botLog.debug({botInstructions: botInstructions})
+const botInstructions = 'Your name is ' + name + '. ' + additionalBotInstructions
+botLog.debug({ botInstructions: botInstructions })
 
 async function onClientMessage(msg: WebSocketMessage<JSONMessageData>, meId: string) {
   if ((msg.event !== 'posted' && msg.event !== 'post_edited') || !meId) {
@@ -60,7 +67,7 @@ async function onClientMessage(msg: WebSocketMessage<JSONMessageData>, meId: str
   if (await isMessageIgnored(msgData, meId, posts)) {
     return
   }
-  botLog.trace({ threadPosts: posts })
+  matterMostLog.trace({ threadPosts: posts }) // Mattermostのスレッド全部
 
   const chatmessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     {
@@ -81,7 +88,7 @@ async function appendThreadPosts(
   unuseImages: boolean,
 ) {
   for (const threadPost of posts) {
-    matterMostLog.trace({ msg: threadPost })
+    //mattermostライブラリでダンプしている botLog.trace('appendThreadPosts: ', threadPost) // Mattermostのスレッドをひとつづダンプ
     if (threadPost.user_id === meId) {
       // bot自身のメッセージなのでassitantに入れる
       // assitant は content: string | null でArrayはないので画像は取り込めない
@@ -148,10 +155,12 @@ async function getBase64Image(url: string, token: string = ''): Promise<string> 
       Authorization: `Bearer ${token}`, // Add the Authentication header here
     }
   }
-  const response = await fetch(url, init)
-  // error handling if the fetch failed
+  const response = await fetch(url, init).catch(error => {
+    matterMostLog.error(`Fech Exception! url: ${url}`, error)
+    return { ok: false } as Response
+  })
   if (!response.ok) {
-    matterMostLog.error(`Fech Image URL HTTP error! status: ${response.status}`)
+    botLog.error(`Fech Image URL HTTP error! status: ${response?.status}`)
     return ''
   }
   let buffer = Buffer.from(await response.arrayBuffer())
