@@ -1,5 +1,6 @@
 import { AIProvider, AnthropicAdapter, CohereAdapter, OpenAIAdapter, OpenAiArgs, shortenString } from './AIProvider'
 import { AiResponse, MattermostMessageData } from './types.js'
+import { GoogleGeminiAdapter } from './adapers/GoogleGeminiAdapter'
 import OpenAI from 'openai'
 import { PluginBase } from './plugins/PluginBase.js'
 
@@ -10,6 +11,7 @@ const azureOpenAiApiKey = process.env['AZURE_OPENAI_API_KEY']
 const azureOpenAiApiVersion = process.env['AZURE_OPENAI_API_VERSION'] ?? '2024-03-01-preview'
 const anthropicApiKey = process.env['ANTHROPIC_API_KEY']
 const cohereApiKey = process.env['COHERE_API_KEY']
+const googleApiKey = process.env['GOOGLE_API_KEY']
 const basePath = process.env['OPENAI_API_BASE']
 log.trace({ basePath })
 
@@ -24,9 +26,9 @@ const azureOpenAiImageApiKey = process.env['AZURE_OPENAI_API_IMAGE_KEY']
 let imageModel = process.env['OPENAI_IMAGE_MODEL_NAME'] ?? 'dall-e-3'
 
 // log.trace({ apiKey })
-if (!apiKey && !azureOpenAiApiKey && !anthropicApiKey && !cohereApiKey) {
-  log.error('OPENAI_API_KEY, AZURE_OPENAI_API_KEY, ANTHROPIC_API_KEY, COHERE_API_KEY is not set')
-  process.exit(1) //呼び出され丸まで落ちないのでrestartストリームにはならない
+if (!apiKey && !azureOpenAiApiKey && !anthropicApiKey && !cohereApiKey && !googleApiKey) {
+  log.error('OPENAI_API_KEY, AZURE_OPENAI_API_KEY, ANTHROPIC_API_KEY, COHERE_API_KEY or GOOGLE_API_KEY is not set')
+  process.exit(1) //呼び出されるまで落ちないのでrestartストリームにはならない
 }
 
 let config: OpenAiArgs = { apiKey, baseURL: basePath }
@@ -46,7 +48,9 @@ const openai: AIProvider = anthropicApiKey
   ? new AnthropicAdapter({ apiKey: anthropicApiKey })
   : cohereApiKey
     ? new CohereAdapter({ apiKey: cohereApiKey })
-    : new OpenAIAdapter(config)
+    : googleApiKey
+      ? new GoogleGeminiAdapter(googleApiKey, model, MAX_TOKENS, temperature)
+      : new OpenAIAdapter(config)
 log.debug(`OpenAI ${openai?.baseURL}`)
 
 // イメージ生成用のエンドポイントを用意する
@@ -261,7 +265,6 @@ export async function continueThread(
  * @param messages The message history the response is created for.
  * @param functions Function calls which can be called by the openAI model
  */
-// eslint-disable-next-line max-lines-per-function
 export async function createChatCompletion(
   messages: OpenAI.Chat.ChatCompletionMessageParam[],
   functions: OpenAI.Chat.ChatCompletionCreateParams.Function[] | undefined = undefined, //TODO: tools[]化

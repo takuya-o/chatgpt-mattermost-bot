@@ -37,3 +37,11 @@ services:
     restart: always
     env_file: .env.cohere
 
+  gemini:
+    image: ${CI_REGISTRY_IMAGE:-gitlab.example.com/user/chatgpt-mattermost-bot}:${CI_COMMIT_REF_NAME:+local}
+    build:
+      context: .
+      args:
+        NODE_ENV: ${NODE_ENV:-production}
+    restart: always
+    env_file: .env.gemini

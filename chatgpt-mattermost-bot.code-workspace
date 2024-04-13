@@ -63,6 +63,30 @@
                     "${workspaceFolder}/node_modules/**",
                 ],
             },
+            {   // https://www.npmjs.com/package/tsx#debugging-method-1-run-tsx-directly-from-vscode
+                "name": "tsx Gemini",
+                "type": "node",
+                "request": "launch",
+                "envFile": "${workspaceFolder}/.env.gemini.debug",
+                "program": "${workspaceFolder}/src/botservice.ts", //"${file}",
+                /*
+                Path to tsx binary
+                Assuming locally installed
+                */
+                "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/tsx",
+                /*
+                Open terminal when debugging starts (Optional)
+                Useful to see console.logs
+                */
+                "console": "integratedTerminal",
+                "internalConsoleOptions": "neverOpen", //デバッグ セッション中の [デバッグ コンソール] パネルの表示/非表示を制御
+                "skipFiles": [
+                    // Node.js internal core modules
+                    "<node_internals>/**",
+                    // Ignore all dependencies (optional)
+                    "${workspaceFolder}/node_modules/**",
+                ],
+            },
             {
                 "name": "Launch via NPM", //自動的に出てるVSCODEのおすすめ
                 "request": "launch",

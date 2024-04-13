@@ -91,7 +91,43 @@ import FormData from "form-data";
 // src/AIProvider.ts
 import { CohereClient } from "cohere-ai";
 import Anthropic from "@anthropic-ai/sdk";
+import { Log as Log2 } from "debug-level";
 import OpenAI from "openai";
+Log2.options({ json: true, colors: true });
+var log = new Log2("AIAdapter");
+var AIAdapter = class {
+  // OpenAIのUserロールからメッセージを取り出す
+  getLastMessage(messages) {
+    return messages.pop();
+  }
+  getUserMessage(openAImessage) {
+    if (!openAImessage) {
+      return "";
+    }
+    let message = "";
+    if (openAImessage.content) {
+      if (typeof openAImessage.content === "string") {
+        message = openAImessage.content;
+      } else {
+        openAImessage.content.forEach((content) => {
+          const contentPartText = content;
+          if (contentPartText.type === "text") {
+            message += contentPartText.text;
+          } else {
+            const conteentPartImage = content;
+            log.debug(
+              "Not support man image_url",
+              conteentPartImage.type,
+              shortenString(conteentPartImage.image_url.url)
+            );
+          }
+        });
+      }
+    }
+    log.trace("getUserMessage():", message);
+    return message;
+  }
+};
 var OpenAIAdapter = class {
   openai;
   baseURL;
@@ -100,7 +136,14 @@ var OpenAIAdapter = class {
     this.baseURL = this.openai.baseURL;
   }
   async createMessage(options) {
-    return this.openai.chat.completions.create(options);
+    try {
+      return this.openai.chat.completions.create(options);
+    } catch (error) {
+      if (error instanceof OpenAI.APIError) {
+        log.error(`OpenAI API Error: ${error.status} ${error.name}`, error);
+      }
+      throw error;
+    }
   }
   async imagesGenerate(imageGeneratePrams) {
     return this.openai.images.generate(imageGeneratePrams);
@@ -141,16 +184,17 @@ var AnthropicAdapter = class {
     throw new Error("Anthropic does not support image generation.");
   }
 };
-var CohereAdapter = class {
+var CohereAdapter = class extends AIAdapter {
   cohere;
   baseURL;
   constructor(args) {
+    super();
     this.cohere = new CohereClient({ token: args?.apiKey });
     this.baseURL = "https://api.cohere.ai/";
   }
   async createMessage(options) {
     const chat = await this.cohere.chat(this.mapOpenAIOptionsToCohereOptions(options));
-    openAILog.debug("Cohere chat() response: ", chat);
+    log.debug("Cohere chat() response: ", chat);
     return this.mapOpenAICompletion(chat, options.model);
   }
   mapOpenAICompletion(chat, model2) {
@@ -166,8 +210,8 @@ var CohereAdapter = class {
         }
       }
     ];
-    const inputTokens = chat.meta.billed_units.input_tokens;
-    const outputTokens = chat.meta.billed_units.output_tokens;
+    const inputTokens = chat.meta?.billedUnits?.inputTokens ?? -1;
+    const outputTokens = chat.meta?.billedUnits?.outputTokens ?? -1;
     return {
       id: "",
       created: 0,
@@ -192,39 +236,9 @@ var CohereAdapter = class {
       p: options.top_p ?? void 0,
       tools: this.getTools(options.tools),
       chatHistory: this.getChatHistory(options.messages)
+      //TODO: getUserMessage()されてから呼ばれている?
     };
     return chatRequest;
-  }
-  // OpenAIのUserロールからメッセージを取り出す
-  getLastMessage(messages) {
-    return messages.pop();
-  }
-  getUserMessage(openAImessage) {
-    if (!openAImessage) {
-      return "";
-    }
-    let message = "";
-    if (openAImessage.content) {
-      if (typeof openAImessage.content === "string") {
-        message = openAImessage.content;
-      } else {
-        openAImessage.content.forEach((content) => {
-          const contentPartText = content;
-          if (contentPartText.type === "text") {
-            message += contentPartText.text;
-          } else {
-            const conteentPartImage = content;
-            openAILog.debug(
-              "Not support man image_url",
-              conteentPartImage.type,
-              shortenString(conteentPartImage.image_url.url)
-            );
-          }
-        });
-      }
-    }
-    openAILog.debug("Cohere message", message);
-    return message;
   }
   getTools(tools) {
     if (!tools || tools.length < 0) {
@@ -250,7 +264,7 @@ var CohereAdapter = class {
         parameterDefinitions
       });
     });
-    openAILog.debug("Cohere tools", cohereTools);
+    log.debug("Cohere tools", cohereTools);
     return cohereTools;
   }
   getChatHistory(messages) {
@@ -275,10 +289,10 @@ var CohereAdapter = class {
           message: message.content ?? ""
         });
       } else {
-        openAILog.debug("getChatHistory(): ${message.role} not yet support.", message);
+        log.debug(`getChatHistory(): ${message.role} not yet support.`, message);
       }
     });
-    openAILog.debug("Cohere chat history", chatHistory);
+    log.debug("Cohere chat history", chatHistory);
     return chatHistory;
   }
   async imagesGenerate(_imageGeneratePrams) {
@@ -295,12 +309,136 @@ function shortenString(text) {
   return text.substring(0, 1023) + "...";
 }
 
+// src/adapers/GoogleGeminiAdapter.ts
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { Log as Log3 } from "debug-level";
+Log3.options({ json: true, colors: true });
+var log2 = new Log3("Gemini");
+var GoogleGeminiAdapter = class extends AIAdapter {
+  generativeModel;
+  baseURL;
+  MAX_TOKENS;
+  temperature;
+  constructor(apiKey2, model2, MAX_TOKENS2, temperature2) {
+    super();
+    this.MAX_TOKENS = MAX_TOKENS2;
+    this.temperature = temperature2;
+    const configuration = new GoogleGenerativeAI(apiKey2);
+    this.generativeModel = configuration.getGenerativeModel(
+      {
+        model: model2,
+        generationConfig: {
+          maxOutputTokens: this.MAX_TOKENS,
+          temperature: this.temperature
+          //topP, TopK
+        }
+      },
+      {
+        apiVersion: "v1beta"
+      }
+    );
+    this.baseURL = `https://generativelanguage.googleapis.com/v1/models/${model2}:`;
+  }
+  async createMessage(options) {
+    const systemInstruction = this.createContents([
+      options.messages.shift()
+    ])[0];
+    const currentMessages = this.createContents(options.messages);
+    const prompt = this.getUserMessage(this.getLastMessage(options.messages));
+    const generateContentResult = await this.generativeModel.generateContent({
+      // https://ai.google.dev/api/rest/v1/models/generateContent?hl=ja#request-body
+      contents: currentMessages,
+      //safetySettings,
+      //generationConfig,
+      systemInstruction
+      //tools?: Tool[];
+      //toolConfig?: ToolConfig;
+    });
+    log2.trace("GenerateContentResult", generateContentResult);
+    const responseText = generateContentResult.response.text();
+    const choices = this.createChoice(responseText);
+    const usage = await this.getUsage(currentMessages, prompt, responseText);
+    return {
+      id: "",
+      created: 0,
+      object: "chat.completion",
+      //OputAI固定値
+      choices,
+      usage,
+      model: options.model
+    };
+  }
+  createContents(messages) {
+    const currentMessages = [];
+    messages.forEach(async (message) => {
+      switch (message.role) {
+        case "system":
+          currentMessages.push({ role: "user", parts: [{ text: message.content }] });
+          currentMessages.push({ role: "model", parts: [{ text: "OKay" }] });
+          break;
+        case "user":
+          currentMessages.push({ role: "user", parts: [{ text: this.getUserMessage(message) }] });
+          break;
+        case "assistant":
+          currentMessages.push({ role: "model", parts: [{ text: message.content }] });
+          break;
+        case "tool":
+        case "function":
+        default:
+          log2.error(`getChatHistory(): ${message.role} not yet support.`, message);
+          break;
+      }
+    });
+    log2.trace("currentMessages():", currentMessages);
+    return currentMessages;
+  }
+  createChoice(responseText) {
+    return [
+      {
+        finish_reason: "stop",
+        index: 0,
+        logprobs: null,
+        //ログ確率情報
+        message: {
+          role: "assistant",
+          content: responseText
+        }
+      }
+    ];
+  }
+  async getUsage(history, prompt, responseText) {
+    const msgContent = { role: "user", parts: [{ text: prompt }] };
+    const contents = [...history, msgContent];
+    let inputTokens = -1;
+    let outputTokens = -1;
+    try {
+      inputTokens = (await this.generativeModel.countTokens({ contents })).totalTokens;
+      outputTokens = (await this.generativeModel.countTokens(responseText)).totalTokens;
+    } catch (error) {
+      if (error.message.indexOf("GoogleGenerativeAI Error") >= 0) {
+        log2.info("Gemini 1.5 not support countTokens()?", error);
+      } else {
+        throw error;
+      }
+    }
+    return {
+      prompt_tokens: inputTokens,
+      completion_tokens: outputTokens,
+      total_tokens: inputTokens + outputTokens
+    };
+  }
+  imagesGenerate(_imageGeneratePrams) {
+    throw new Error("GoogleGeminiAdapter does not support image generation.");
+  }
+};
+
 // src/openai-wrapper.ts
 var apiKey = process.env["OPENAI_API_KEY"];
 var azureOpenAiApiKey = process.env["AZURE_OPENAI_API_KEY"];
 var azureOpenAiApiVersion = process.env["AZURE_OPENAI_API_VERSION"] ?? "2024-03-01-preview";
 var anthropicApiKey = process.env["ANTHROPIC_API_KEY"];
 var cohereApiKey = process.env["COHERE_API_KEY"];
+var googleApiKey = process.env["GOOGLE_API_KEY"];
 var basePath = process.env["OPENAI_API_BASE"];
 openAILog.trace({ basePath });
 var model = process.env["OPENAI_MODEL_NAME"] ?? "gpt-3.5-turbo";
@@ -310,8 +448,8 @@ var azureOpenAiVisionApiKey = process.env["AZURE_OPENAI_API_VISION_KEY"];
 var visionModel = process.env["OPENAI_VISION_MODEL_NAME"];
 var azureOpenAiImageApiKey = process.env["AZURE_OPENAI_API_IMAGE_KEY"];
 var imageModel = process.env["OPENAI_IMAGE_MODEL_NAME"] ?? "dall-e-3";
-if (!apiKey && !azureOpenAiApiKey && !anthropicApiKey && !cohereApiKey) {
-  openAILog.error("OPENAI_API_KEY, AZURE_OPENAI_API_KEY, ANTHROPIC_API_KEY, COHERE_API_KEY is not set");
+if (!apiKey && !azureOpenAiApiKey && !anthropicApiKey && !cohereApiKey && !googleApiKey) {
+  openAILog.error("OPENAI_API_KEY, AZURE_OPENAI_API_KEY, ANTHROPIC_API_KEY, COHERE_API_KEY or GOOGLE_API_KEY is not set");
   process.exit(1);
 }
 var config = { apiKey, baseURL: basePath };
@@ -324,7 +462,7 @@ if (azureOpenAiApiKey) {
     defaultHeaders: { "api-key": azureOpenAiApiKey }
   };
 }
-var openai = anthropicApiKey ? new AnthropicAdapter({ apiKey: anthropicApiKey }) : cohereApiKey ? new CohereAdapter({ apiKey: cohereApiKey }) : new OpenAIAdapter(config);
+var openai = anthropicApiKey ? new AnthropicAdapter({ apiKey: anthropicApiKey }) : cohereApiKey ? new CohereAdapter({ apiKey: cohereApiKey }) : googleApiKey ? new GoogleGeminiAdapter(googleApiKey, model, MAX_TOKENS, temperature) : new OpenAIAdapter(config);
 openAILog.debug(`OpenAI ${openai?.baseURL}`);
 var openaiImage = openai;
 if (azureOpenAiApiKey || azureOpenAiImageApiKey) {

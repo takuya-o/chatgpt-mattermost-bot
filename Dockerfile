@@ -4,8 +4,9 @@ FROM node:20-slim as npm_builder
 
 WORKDIR /app
 COPY [ "package.json", "package-lock.json", ".npmrc", \
-  ".eslintrc.json", ".prettierignore", ".prettierrc", \
+  ".prettierignore", ".prettierrc", \
   "tsconfig.json", \
+  "eslint.config.js", \
   "esbuild.config.js", \
   "./" ]
 COPY [ "src/", "./src/" ]

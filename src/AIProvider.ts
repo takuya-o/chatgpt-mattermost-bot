@@ -1,7 +1,10 @@
 import { Cohere, CohereClient } from 'cohere-ai'
 import Anthropic from '@anthropic-ai/sdk'
+import { Log } from 'debug-level'
 import OpenAI from 'openai'
-import { openAILog as log } from './logging.js'
+
+Log.options({ json: true, colors: true })
+const log = new Log('AIAdapter')
 
 export interface AIProvider {
   baseURL: string
@@ -19,6 +22,47 @@ export type OpenAiArgs = {
 }
 
 /**
+ * Utility Class
+ **/
+export class AIAdapter {
+  // OpenAIのUserロールからメッセージを取り出す
+  protected getLastMessage(
+    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+  ): OpenAI.Chat.Completions.ChatCompletionMessageParam | undefined {
+    return messages.pop() //最後を取り出す
+  }
+
+  protected getUserMessage(openAImessage: OpenAI.Chat.Completions.ChatCompletionMessageParam | undefined): string {
+    if (!openAImessage) {
+      return ''
+    }
+    let message = ''
+    if (openAImessage.content) {
+      if (typeof openAImessage.content === 'string') {
+        message = openAImessage.content
+      } else {
+        openAImessage.content.forEach(content => {
+          const contentPartText = content as OpenAI.Chat.Completions.ChatCompletionContentPartText
+          if (contentPartText.type === 'text') {
+            message += contentPartText.text
+          } else {
+            const conteentPartImage = content as OpenAI.Chat.Completions.ChatCompletionContentPartImage
+            // image_url なら無視
+            log.debug(
+              'Not support man image_url',
+              conteentPartImage.type,
+              shortenString(conteentPartImage.image_url.url),
+            )
+          }
+        })
+      }
+    }
+    log.trace('getUserMessage():', message)
+    return message
+  }
+}
+
+/**
  * OpenAI Adapter
  */
 export class OpenAIAdapter implements AIProvider {
@@ -33,7 +77,15 @@ export class OpenAIAdapter implements AIProvider {
   async createMessage(
     options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
   ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
-    return this.openai.chat.completions.create(options)
+    // OpenAI.APIErrorをキャッチしてエラーをログに出力する
+    try {
+      return this.openai.chat.completions.create(options)
+    } catch (error) {
+      if (error instanceof OpenAI.APIError) {
+        log.error(`OpenAI API Error: ${error.status} ${error.name}`, error)
+      }
+      throw error
+    }
   }
   async imagesGenerate(imageGeneratePrams: OpenAI.Images.ImageGenerateParams) {
     return this.openai.images.generate(imageGeneratePrams)
@@ -91,11 +143,12 @@ export class AnthropicAdapter implements AIProvider {
 /**
  * Cohrere Adapter
  */
-export class CohereAdapter implements AIProvider {
+export class CohereAdapter extends AIAdapter implements AIProvider {
   private cohere: CohereClient
   baseURL: string
 
   constructor(args?: OpenAiArgs) {
+    super()
     this.cohere = new CohereClient({ token: args?.apiKey })
     this.baseURL = 'https://api.cohere.ai/'
   }
@@ -124,11 +177,10 @@ export class CohereAdapter implements AIProvider {
         },
       },
     ]
-    // 実際のレスポンスにはあるけどNonStreamedChatResponseには無い
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const inputTokens = (chat as any).meta.billed_units.input_tokens as number
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const outputTokens = (chat as any).meta.billed_units.output_tokens as number
+    // 実際のレスポンスにはあるけどNonStreamedChatResponseには無かったが入った
+    const inputTokens = chat.meta?.billedUnits?.inputTokens ?? -1
+    const outputTokens = chat.meta?.billedUnits?.outputTokens ?? -1
+
     return {
       id: '',
       created: 0,
@@ -153,45 +205,9 @@ export class CohereAdapter implements AIProvider {
       maxTokens: options.max_tokens ?? undefined,
       p: options.top_p ?? undefined,
       tools: this.getTools(options.tools),
-      chatHistory: this.getChatHistory(options.messages),
+      chatHistory: this.getChatHistory(options.messages), //TODO: getUserMessage()されてから呼ばれている?
     }
     return chatRequest
-  }
-
-  // OpenAIのUserロールからメッセージを取り出す
-  private getLastMessage(
-    messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-  ): OpenAI.Chat.Completions.ChatCompletionMessageParam | undefined {
-    return messages.pop() //最後を取り出す
-  }
-
-  private getUserMessage(openAImessage: OpenAI.Chat.Completions.ChatCompletionMessageParam | undefined): string {
-    if (!openAImessage) {
-      return ''
-    }
-    let message = ''
-    if (openAImessage.content) {
-      if (typeof openAImessage.content === 'string') {
-        message = openAImessage.content
-      } else {
-        openAImessage.content.forEach(content => {
-          const contentPartText = content as OpenAI.Chat.Completions.ChatCompletionContentPartText
-          if (contentPartText.type === 'text') {
-            message += contentPartText.text
-          } else {
-            const conteentPartImage = content as OpenAI.Chat.Completions.ChatCompletionContentPartImage
-            // image_url なら無視
-            log.debug(
-              'Not support man image_url',
-              conteentPartImage.type,
-              shortenString(conteentPartImage.image_url.url),
-            )
-          }
-        })
-      }
-    }
-    log.debug('Cohere message', message)
-    return message
   }
 
   private getTools(tools: OpenAI.Chat.Completions.ChatCompletionTool[] | undefined): Cohere.Tool[] | undefined {
@@ -250,7 +266,7 @@ export class CohereAdapter implements AIProvider {
         })
       } else {
         // "function" | "tool"
-        log.debug('getChatHistory(): ${message.role} not yet support.', message)
+        log.debug(`getChatHistory(): ${message.role} not yet support.`, message)
       }
     })
     log.debug('Cohere chat history', chatHistory)
