@@ -27,7 +27,7 @@ export default tseslint.config({
     /** 命名規則 */
     "@typescript-eslint/naming-convention": [
       "error",
-      { // classやtypeなどは頭大文
+      { // classやtypeなどは頭大文字
         "selector": "typeLike",
         "format": ["PascalCase"]
       },

@@ -89,10 +89,7 @@ import FormData3 from "form-data";
 import FormData from "form-data";
 
 // src/AIProvider.ts
-import { CohereClient } from "cohere-ai";
-import Anthropic from "@anthropic-ai/sdk";
 import { Log as Log2 } from "debug-level";
-import OpenAI from "openai";
 Log2.options({ json: true, colors: true });
 var log = new Log2("AIAdapter");
 var AIAdapter = class {
@@ -128,27 +125,18 @@ var AIAdapter = class {
     return message;
   }
 };
-var OpenAIAdapter = class {
-  openai;
-  baseURL;
-  constructor(openaiArgs) {
-    this.openai = new OpenAI(openaiArgs);
-    this.baseURL = this.openai.baseURL;
+function shortenString(text) {
+  if (!text) {
+    return text;
   }
-  async createMessage(options) {
-    try {
-      return this.openai.chat.completions.create(options);
-    } catch (error) {
-      if (error instanceof OpenAI.APIError) {
-        log.error(`OpenAI API Error: ${error.status} ${error.name}`, error);
-      }
-      throw error;
-    }
+  if (text.length < 1024) {
+    return text;
   }
-  async imagesGenerate(imageGeneratePrams) {
-    return this.openai.images.generate(imageGeneratePrams);
-  }
-};
+  return text.substring(0, 1023) + "...";
+}
+
+// src/adapters/AnthropicAdapter.ts
+import Anthropic from "@anthropic-ai/sdk";
 var AnthropicAdapter = class {
   anthropic;
   baseURL;
@@ -184,6 +172,12 @@ var AnthropicAdapter = class {
     throw new Error("Anthropic does not support image generation.");
   }
 };
+
+// src/adapters/CohereAdapter.ts
+import { CohereClient } from "cohere-ai";
+import Log3 from "debug-level";
+Log3.options({ json: true, colors: true });
+var log2 = new Log3("Cohere");
 var CohereAdapter = class extends AIAdapter {
   cohere;
   baseURL;
@@ -194,7 +188,7 @@ var CohereAdapter = class extends AIAdapter {
   }
   async createMessage(options) {
     const chat = await this.cohere.chat(this.mapOpenAIOptionsToCohereOptions(options));
-    log.debug("Cohere chat() response: ", chat);
+    log2.debug("Cohere chat() response: ", chat);
     return this.mapOpenAICompletion(chat, options.model);
   }
   mapOpenAICompletion(chat, model2) {
@@ -264,7 +258,7 @@ var CohereAdapter = class extends AIAdapter {
         parameterDefinitions
       });
     });
-    log.debug("Cohere tools", cohereTools);
+    log2.debug("Cohere tools", cohereTools);
     return cohereTools;
   }
   getChatHistory(messages) {
@@ -289,31 +283,22 @@ var CohereAdapter = class extends AIAdapter {
           message: message.content ?? ""
         });
       } else {
-        log.debug(`getChatHistory(): ${message.role} not yet support.`, message);
+        log2.debug(`getChatHistory(): ${message.role} not yet support.`, message);
       }
     });
-    log.debug("Cohere chat history", chatHistory);
+    log2.debug("Cohere chat history", chatHistory);
     return chatHistory;
   }
   async imagesGenerate(_imageGeneratePrams) {
     throw new Error("Cohere does not support image generation.");
   }
 };
-function shortenString(text) {
-  if (!text) {
-    return text;
-  }
-  if (text.length < 1024) {
-    return text;
-  }
-  return text.substring(0, 1023) + "...";
-}
 
-// src/adapers/GoogleGeminiAdapter.ts
+// src/adapters/GoogleGeminiAdapter.ts
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { Log as Log3 } from "debug-level";
-Log3.options({ json: true, colors: true });
-var log2 = new Log3("Gemini");
+import { Log as Log4 } from "debug-level";
+Log4.options({ json: true, colors: true });
+var log3 = new Log4("Gemini");
 var GoogleGeminiAdapter = class extends AIAdapter {
   generativeModel;
   baseURL;
@@ -354,7 +339,7 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       //tools?: Tool[];
       //toolConfig?: ToolConfig;
     });
-    log2.trace("GenerateContentResult", generateContentResult);
+    log3.trace("GenerateContentResult", generateContentResult);
     const responseText = generateContentResult.response.text();
     const choices = this.createChoice(responseText);
     const usage = await this.getUsage(currentMessages, prompt, responseText);
@@ -385,11 +370,11 @@ var GoogleGeminiAdapter = class extends AIAdapter {
         case "tool":
         case "function":
         default:
-          log2.error(`getChatHistory(): ${message.role} not yet support.`, message);
+          log3.error(`getChatHistory(): ${message.role} not yet support.`, message);
           break;
       }
     });
-    log2.trace("currentMessages():", currentMessages);
+    log3.trace("currentMessages():", currentMessages);
     return currentMessages;
   }
   createChoice(responseText) {
@@ -416,7 +401,7 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       outputTokens = (await this.generativeModel.countTokens(responseText)).totalTokens;
     } catch (error) {
       if (error.message.indexOf("GoogleGenerativeAI Error") >= 0) {
-        log2.info("Gemini 1.5 not support countTokens()?", error);
+        log3.info("Gemini 1.5 not support countTokens()?", error);
       } else {
         throw error;
       }
@@ -429,6 +414,33 @@ var GoogleGeminiAdapter = class extends AIAdapter {
   }
   imagesGenerate(_imageGeneratePrams) {
     throw new Error("GoogleGeminiAdapter does not support image generation.");
+  }
+};
+
+// src/adapters/OpenAIAdapter.ts
+import Log5 from "debug-level";
+import OpenAI from "openai";
+Log5.options({ json: true, colors: true });
+var log4 = new Log5("OpenAI");
+var OpenAIAdapter = class {
+  openai;
+  baseURL;
+  constructor(openaiArgs) {
+    this.openai = new OpenAI(openaiArgs);
+    this.baseURL = this.openai.baseURL;
+  }
+  async createMessage(options) {
+    try {
+      return this.openai.chat.completions.create(options);
+    } catch (error) {
+      if (error instanceof OpenAI.APIError) {
+        log4.error(`OpenAI API Error: ${error.status} ${error.name}`, error);
+      }
+      throw error;
+    }
+  }
+  async imagesGenerate(imageGeneratePrams) {
+    return this.openai.images.generate(imageGeneratePrams);
   }
 };
 

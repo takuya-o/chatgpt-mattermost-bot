@@ -15,37 +15,79 @@
 #         enabled: false
 # # ... CONFIG CONTENT ...
 ---
+# https://docs.codeclimate.com/docs/advanced-configuration
 version: "2"
+checks:
+  # commenct is default
+#   argument-count:
+#     config:
+#       threshold: 4
+#   complex-logic:
+#     config:
+#       threshold: 4
+#   file-lines:
+#     config:
+#       threshold: 250
+#   method-complexity:
+#     config:
+#       threshold: 5
+#   method-count:
+#     config:
+#       threshold: 20
+#   method-lines:
+#     config:
+#       threshold: 25
+#   nested-control-flow:
+#     config:
+#       threshold: 4
+#   return-statements:
+#     config:
+#       threshold: 4
+#   similar-code:
+#     config:
+#       threshold: # language-specific defaults. an override will affect all languages.
+#   identical-code:
+#     config:
+#       threshold: # language-specific defaults. an override will affect all languages.
 plugins:
-  # csslint:
-  #   enabled: true
+  # https://docs.codeclimate.com/docs/list-of-engines
   # coffeelint:
   #   enabled: true
+  csslint:
+    enabled: true
   duplication:
     enabled: true
     config:
+      # https://docs.codeclimate.com/docs/duplication
       languages:
-# https://docs.codeclimate.com/docs/duplication
         - typescript
-        - ruby
+        # - ruby
         - javascript
-        - python
-        - php
-# https://docs.codeclimate.com/docs/list-of-engines
-# https://docs.codeclimate.com/docs/tslint
-#  $  ./node_modules/.bin/tslint src/**/*.ts
-  # tslint:
-  #   enabled: true
-  #   config: tslint.json
+        # - python
+        # - php
   eslint:
+    # https://docs.codeclimate.com/docs/eslint
     enabled: true
     channel: "stable"
-    config: .eslintrc.json
+    # config: .eslintrc.json
   fixme:
     enabled: true
-  rubocop:
+  #rubocop:
+  #  enabled: true
+  ##
+  ## Community-Supported Plugins
+  ##
+  markdownlint:
     enabled: true
+  # semgrep:
+    # enabled: true
+  # tslint:
+    # https://docs.codeclimate.com/docs/tslint
+    # $  ./node_modules/.bin/tslint src/**/*.ts
+    #  enabled: true
+    #  config: tslint.json
 exclude_patterns:
+  # https://docs.codeclimate.com/docs/excluding-files-and-folders#section-auto-generated-file-and-folder-exclusions
   - config/
   - db/
   - dist/
@@ -59,6 +101,7 @@ exclude_patterns:
   - "**/vendor/"
   - "**/*_test.go"
   - "**/*.d.ts"
+  # add
   - "**/*.min.js"
   - "**/*.min.css"
   - "**/__tests__/"

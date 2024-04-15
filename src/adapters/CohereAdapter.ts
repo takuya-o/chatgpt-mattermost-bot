@@ -1,0 +1,146 @@
+import { AIAdapter, AIProvider, OpenAiArgs } from '../AIProvider'
+import { Cohere, CohereClient } from 'cohere-ai'
+import Log from 'debug-level'
+import OpenAI from 'openai'
+
+Log.options({ json: true, colors: true })
+const log = new Log('Cohere')
+
+/**
+ * Cohrere Adapter
+ */
+export class CohereAdapter extends AIAdapter implements AIProvider {
+  private cohere: CohereClient
+  baseURL: string
+
+  constructor(args?: OpenAiArgs) {
+    super()
+    this.cohere = new CohereClient({ token: args?.apiKey })
+    this.baseURL = 'https://api.cohere.ai/'
+  }
+
+  async createMessage(
+    options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+  ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+    const chat = await this.cohere.chat(this.mapOpenAIOptionsToCohereOptions(options))
+    log.debug('Cohere chat() response: ', chat)
+    return this.mapOpenAICompletion(chat, options.model)
+  }
+
+  private mapOpenAICompletion(
+    chat: Cohere.NonStreamedChatResponse,
+    model: string,
+  ): OpenAI.Chat.Completions.ChatCompletion {
+    //レスポンスメッセージの詰替え
+    const choices: OpenAI.Chat.Completions.ChatCompletion.Choice[] = [
+      {
+        finish_reason: 'stop',
+        index: 0,
+        logprobs: null, //ログ確率情報
+        message: {
+          role: 'assistant',
+          content: chat.text,
+        },
+      },
+    ]
+    // 実際のレスポンスにはあるけどNonStreamedChatResponseには無かったが入った
+    const inputTokens = chat.meta?.billedUnits?.inputTokens ?? -1
+    const outputTokens = chat.meta?.billedUnits?.outputTokens ?? -1
+
+    return {
+      id: '',
+      created: 0,
+      object: 'chat.completion', //OputAI固定値
+      choices,
+      usage: {
+        prompt_tokens: inputTokens,
+        completion_tokens: outputTokens,
+        total_tokens: inputTokens + outputTokens,
+      },
+      model,
+    }
+  }
+
+  private mapOpenAIOptionsToCohereOptions(
+    options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+  ): Cohere.ChatRequest {
+    const chatRequest: Cohere.ChatRequest = {
+      model: options.model,
+      message: this.getUserMessage(this.getLastMessage(options.messages)), //最後のメッセージがユーザのメッセージ
+      temperature: options.temperature ?? undefined,
+      maxTokens: options.max_tokens ?? undefined,
+      p: options.top_p ?? undefined,
+      tools: this.getTools(options.tools),
+      chatHistory: this.getChatHistory(options.messages), //TODO: getUserMessage()されてから呼ばれている?
+    }
+    return chatRequest
+  }
+
+  private getTools(tools: OpenAI.Chat.Completions.ChatCompletionTool[] | undefined): Cohere.Tool[] | undefined {
+    if (!tools || tools.length < 0) {
+      return undefined
+    }
+    const cohereTools: Cohere.Tool[] = []
+    tools.forEach(tool => {
+      let parameterDefinitions: Record<string, Cohere.ToolParameterDefinitionsValue> | undefined
+      if (tool.function.parameters) {
+        parameterDefinitions = {}
+        for (const paramKey in tool.function.parameters) {
+          const param = tool.function.parameters[paramKey] as {
+            name: string
+            type: string
+            description: string
+            required: boolean
+          } // TODO: JSON Schema
+          parameterDefinitions[param.name] = {
+            type: param.type,
+            description: param.description,
+            required: param.required,
+          }
+        }
+      }
+      cohereTools.push({
+        description: tool.function.description ?? '',
+        name: tool.function.name,
+        parameterDefinitions,
+      })
+    })
+    log.debug('Cohere tools', cohereTools)
+    return cohereTools
+  }
+
+  private getChatHistory(messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]) {
+    if (messages.length < 1) {
+      return undefined
+    }
+    const chatHistory: Cohere.ChatMessage[] = []
+    messages.forEach(message => {
+      if (message.role === 'user') {
+        chatHistory.push({
+          role: 'USER',
+          message: this.getUserMessage(message),
+        })
+      } else if (message.role === 'system') {
+        chatHistory.push({
+          role: 'SYSTEM',
+          message: message.content,
+        })
+      } else if (message.role === 'assistant') {
+        chatHistory.push({
+          role: 'CHATBOT',
+          message: message.content ?? '',
+        })
+      } else {
+        // "function" | "tool"
+        log.debug(`getChatHistory(): ${message.role} not yet support.`, message)
+      }
+    })
+    log.debug('Cohere chat history', chatHistory)
+    return chatHistory
+  }
+
+  async imagesGenerate(_imageGeneratePrams: OpenAI.Images.ImageGenerateParams): Promise<OpenAI.Images.ImagesResponse> {
+    // イメージを作るAPIはない?
+    throw new Error('Cohere does not support image generation.')
+  }
+}

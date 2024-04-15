@@ -1,9 +1,11 @@
-import { AIProvider, AnthropicAdapter, CohereAdapter, OpenAIAdapter, OpenAiArgs, shortenString } from './AIProvider'
+import { AIProvider, OpenAiArgs, shortenString } from './AIProvider'
 import { AiResponse, MattermostMessageData } from './types.js'
-import { GoogleGeminiAdapter } from './adapers/GoogleGeminiAdapter'
+import { AnthropicAdapter } from './adapters/AnthropicAdapter'
+import { CohereAdapter } from './adapters/CohereAdapter'
+import { GoogleGeminiAdapter } from './adapters/GoogleGeminiAdapter'
 import OpenAI from 'openai'
+import { OpenAIAdapter } from './adapters/OpenAIAdapter'
 import { PluginBase } from './plugins/PluginBase.js'
-
 import { openAILog as log } from './logging.js'
 
 const apiKey = process.env['OPENAI_API_KEY']
