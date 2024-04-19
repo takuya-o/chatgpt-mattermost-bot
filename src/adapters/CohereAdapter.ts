@@ -22,12 +22,14 @@ export class CohereAdapter extends AIAdapter implements AIProvider {
   async createMessage(
     options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
   ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
-    const chat = await this.cohere.chat(this.mapOpenAIOptionsToCohereOptions(options))
+    // https://docs.cohere.com/reference/chat
+    // まだ messageやhistoryは、stringのみ  Toolsはあるけど。
+    const chat = await this.cohere.chat(this.createCohereRequest(options))
     log.debug('Cohere chat() response: ', chat)
-    return this.mapOpenAICompletion(chat, options.model)
+    return this.createOpenAIChatCompletion(chat, options.model)
   }
 
-  private mapOpenAICompletion(
+  private createOpenAIChatCompletion(
     chat: Cohere.NonStreamedChatResponse,
     model: string,
   ): OpenAI.Chat.Completions.ChatCompletion {
@@ -37,10 +39,7 @@ export class CohereAdapter extends AIAdapter implements AIProvider {
         finish_reason: 'stop',
         index: 0,
         logprobs: null, //ログ確率情報
-        message: {
-          role: 'assistant',
-          content: chat.text,
-        },
+        message: this.createResponseMessages(chat), //tools_callsもここで作る
       },
     ]
     // 実際のレスポンスにはあるけどNonStreamedChatResponseには無かったが入った
@@ -61,52 +60,140 @@ export class CohereAdapter extends AIAdapter implements AIProvider {
     }
   }
 
-  private mapOpenAIOptionsToCohereOptions(
+  private createResponseMessages(chat: Cohere.NonStreamedChatResponse): OpenAI.Chat.Completions.ChatCompletionMessage {
+    if (chat.toolCalls && chat.toolCalls.length > 0) {
+      // toolsが有った場合には展開
+      return this.createToolCallMessage(chat.toolCalls)
+    } else {
+      return {
+        role: 'assistant',
+        content: chat.text,
+      }
+    }
+  }
+  private createToolCallMessage(toolCalls: Cohere.ToolCall[]): OpenAI.Chat.Completions.ChatCompletionMessage {
+    // https://docs.cohere.com/docs/tool-use#the-four-steps-of-single-step-tool-use-theory
+    // An example output:
+    // cohere.ToolCall {
+    //  name: query_daily_sales_report
+    //	parameters: {'day': '2023-09-29'}
+    //	generation_id: 4807c924-9003-4d6b-8069-eda03962c465
+    //}
+    const openAItoolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] = []
+    // Cohre形式をOpenAI形式に変換
+    toolCalls.forEach(toolCall => {
+      openAItoolCalls.push({
+        id: '', //TODO SDKにはまだない toolCall.generation_id,
+        type: 'function',
+        function: {
+          name: this.decodeName(toolCall.name),
+          arguments: JSON.stringify(toolCall.parameters),
+        },
+      })
+    })
+    const message: OpenAI.Chat.Completions.ChatCompletionMessage = {
+      role: 'assistant',
+      content: null,
+      tool_calls: openAItoolCalls,
+    }
+    return message
+  }
+
+  private createCohereRequest(
     options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
   ): Cohere.ChatRequest {
+    let tools = this.createCohereTools(options.tools, options.functions)
+    tools = undefined //ツールを入れるとレスポンスから空っぽになるので止める。 //TODO 止めなくて良くなる対策
     const chatRequest: Cohere.ChatRequest = {
       model: options.model,
       message: this.getUserMessage(this.getLastMessage(options.messages)), //最後のメッセージがユーザのメッセージ
       temperature: options.temperature ?? undefined,
       maxTokens: options.max_tokens ?? undefined,
       p: options.top_p ?? undefined,
-      tools: this.getTools(options.tools),
+      tools,
       chatHistory: this.getChatHistory(options.messages), //TODO: getUserMessage()されてから呼ばれている?
     }
+    log.trace('mapOpenAIOptionsToCohereOptions(): chatRequest', chatRequest)
     return chatRequest
   }
 
-  private getTools(tools: OpenAI.Chat.Completions.ChatCompletionTool[] | undefined): Cohere.Tool[] | undefined {
-    if (!tools || tools.length < 0) {
+  private createCohereTools(
+    tools: OpenAI.Chat.Completions.ChatCompletionTool[] | undefined,
+    functions: OpenAI.Chat.Completions.ChatCompletionCreateParams.Function[] | undefined,
+  ): Cohere.Tool[] | undefined {
+    tools = this.convertFunctionsToTools(functions, tools)
+    if (!tools || tools.length === 0) {
       return undefined
     }
+    // https://docs.cohere.com/docs/tool-use#step-1
+    // tools = [
+    //   {
+    //       "name": "query_daily_sales_report",
+    //       "description": "Connects to a database to retrieve overall sales volumes and sales information for a given day.",
+    //       "parameter_definitions": {
+    //           "day": {
+    //               "description": "Retrieves sales data for this day, formatted as YYYY-MM-DD.",
+    //               "type": "str",
+    //               "required": True
+    //           }
+    //       }
+    //   },
     const cohereTools: Cohere.Tool[] = []
     tools.forEach(tool => {
+      if (tool.type !== 'function') {
+        log.error(`createCohereTools(): ${tool.type} not function.`, tool)
+        return
+      }
+      // functionの引数定義を変換
       let parameterDefinitions: Record<string, Cohere.ToolParameterDefinitionsValue> | undefined
       if (tool.function.parameters) {
+        if (tool.function.parameters.type !== 'object') {
+          log.error(`createCohereTools(): parameter.type ${tool.function.parameters.type} is not  'object'`)
+          return
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const props = tool.function.parameters.properties as any
         parameterDefinitions = {}
-        for (const paramKey in tool.function.parameters) {
-          const param = tool.function.parameters[paramKey] as {
-            name: string
+        for (const propsKey in props) {
+          const param = props[propsKey] as {
+            description?: string
             type: string
-            description: string
-            required: boolean
+            required?: boolean
           } // TODO: JSON Schema
-          parameterDefinitions[param.name] = {
-            type: param.type,
+          parameterDefinitions[propsKey] = {
             description: param.description,
+            type: param.type,
             required: param.required,
           }
         }
       }
       cohereTools.push({
         description: tool.function.description ?? '',
-        name: tool.function.name,
+        name: this.encodeName(tool.function.name), //tool names can only contain certain characters (A-Za-z0-9_) and can't begin with a digit
         parameterDefinitions,
       })
     })
-    log.debug('Cohere tools', cohereTools)
+    //log.trace('Cohere tools', cohereTools)
     return cohereTools
+  }
+
+  /*
+   * TypeScriptでCohere.Toolの名前をA-Za-z0-9_以外を__HEXエンコードするプログラム
+   */
+  private encodeName(name: string): string {
+    // const encodedName = name.replace(/[^A-Za-z0-9_]/g, match => {
+    //   return `__${match.charCodeAt(0).toString(16).padStart(2, '0')}`
+    // })
+    const encodedName = name.replaceAll('-', '_')
+    return encodedName
+  }
+  private decodeName(name: string): string {
+    // const decodedName = name.replace(/__([0-9a-f]{2})/g, match => {
+    //   const codePoint = parseInt(match[1], 16)
+    //   return String.fromCharCode(codePoint)
+    // })
+    const decodedName = name.replaceAll('_', '-')
+    return decodedName
   }
 
   private getChatHistory(messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]) {
@@ -135,7 +222,7 @@ export class CohereAdapter extends AIAdapter implements AIProvider {
         log.debug(`getChatHistory(): ${message.role} not yet support.`, message)
       }
     })
-    log.debug('Cohere chat history', chatHistory)
+    //log.debug('Cohere chat history', chatHistory)
     return chatHistory
   }
 

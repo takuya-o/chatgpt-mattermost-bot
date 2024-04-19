@@ -22,6 +22,10 @@ export class MessageCollectPlugin extends PluginBase<MessageCollectArgs> {
       'The number of messages which should be collected. Omit this parameter if you want to collect all messages.',
       true,
     )
+
+    const plugins = process.env['PLUGINS']
+    if (!plugins || plugins.indexOf('message-collect-plugin') === -1) return false
+
     return super.setup()
   }
 

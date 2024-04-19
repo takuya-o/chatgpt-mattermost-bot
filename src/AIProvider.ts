@@ -58,6 +58,29 @@ export class AIAdapter {
     log.trace('getUserMessage():', message)
     return message
   }
+
+  // OpenAIのFunctionsをToolsに書き換える
+  protected convertFunctionsToTools(
+    functions: OpenAI.Chat.Completions.ChatCompletionCreateParams.Function[] | undefined,
+    tools: OpenAI.Chat.Completions.ChatCompletionTool[] | undefined,
+  ) {
+    if (functions && functions.length > 0) {
+      if (!tools) {
+        tools = []
+      }
+      functions.forEach(functionCall => {
+        tools?.push({
+          type: 'function',
+          function: {
+            name: functionCall.name,
+            description: functionCall.description,
+            parameters: functionCall.parameters,
+          },
+        })
+      })
+    }
+    return tools
+  }
 }
 
 // 1024文字以上の文字列を短くする

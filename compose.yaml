@@ -1,7 +1,7 @@
 ---
 services:
   chatcpt:
-    image: ${CI_REGISTRY_IMAGE:-gitlab.example.com/user/chatgpt-mattermost-bot}:${CI_COMMIT_REF_NAME:+local}
+    image: ${CI_REGISTRY_IMAGE:-gitlab.example.com/user/chatgpt-mattermost-bot}:${CI_COMMIT_REF_NAME:-local}
     build:
       context: .
       args:
@@ -29,7 +29,7 @@ services:
     #   DEBUG_COLORS: ${DEBUG_COLORS}
 
   cohere:
-    image: ${CI_REGISTRY_IMAGE:-gitlab.example.com/user/chatgpt-mattermost-bot}:${CI_COMMIT_REF_NAME:+local}
+    image: ${CI_REGISTRY_IMAGE:-gitlab.example.com/user/chatgpt-mattermost-bot}:${CI_COMMIT_REF_NAME:-local}
     build:
       context: .
       args:
@@ -38,7 +38,7 @@ services:
     env_file: .env.cohere
 
   gemini:
-    image: ${CI_REGISTRY_IMAGE:-gitlab.example.com/user/chatgpt-mattermost-bot}:${CI_COMMIT_REF_NAME:+local}
+    image: ${CI_REGISTRY_IMAGE:-gitlab.example.com/user/chatgpt-mattermost-bot}:${CI_COMMIT_REF_NAME:-local}
     build:
       context: .
       args:

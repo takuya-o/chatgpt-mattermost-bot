@@ -318,9 +318,14 @@ export async function createChatCompletion(
     max_tokens: chatCompletionOptions.max_tokens,
     temperature: chatCompletionOptions.temperature,
     function_call: chatCompletionOptions.function_call,
-    functions: chatCompletionOptions.functions?.map(func => func.name),
+    functions: chatCompletionOptions.functions?.map(
+      func => `${func.name}(${toStringParameters(func.parameters)}): ${func.description}`,
+    ),
     tools_choice: chatCompletionOptions.tool_choice,
-    tools: chatCompletionOptions.tools?.map(tool => tool.type + ' ' + tool.function.name),
+    tools: chatCompletionOptions.tools?.map(
+      tool =>
+        `${tool.type} ${tool.function.name}(${toStringParameters(tool.function.parameters)}): ${tool.function.description}`,
+    ),
   })
   const chatCompletion = await currentOpenAi.createMessage(chatCompletionOptions)
   log.trace({ chatCompletion })
@@ -329,6 +334,22 @@ export async function createChatCompletion(
     usage: chatCompletion.usage,
     model: chatCompletion.model,
   }
+}
+/* Function Parametersのプロパティを文字列に展開する */
+function toStringParameters(parameters?: OpenAI.FunctionParameters) {
+  if (!parameters) {
+    return ''
+  }
+  let string = ''
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const props = parameters.properties as any
+  for (const paramKey in props) {
+    if (string.length > 0) {
+      string += ', '
+    }
+    string += `${paramKey}:${props[paramKey].type}` // ${props[paramKey].description}
+  }
+  return string
 }
 
 /**

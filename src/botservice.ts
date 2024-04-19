@@ -41,10 +41,7 @@ const plugins: PluginBase<any>[] = [
   new GraphPlugin('graph-plugin', 'Generate a graph based on a given description or topic'),
   new ImagePlugin('image-plugin', 'Generates an image based on a given image description.'),
   new ExitPlugin('exit-plugin', 'Says goodbye to the user and wish him a good day.'),
-  new MessageCollectPlugin(
-    'message-collect-plugin',
-    'NONEED: Collects messages in the thread for a specific user or time',
-  ),
+  new MessageCollectPlugin('message-collect-plugin', 'Collects messages in the thread for a specific user or time'),
   new UnuseImagesPlugin('unuse-images-plugin', 'Ignore images when asked to "ignore images".'), // 画像を無視してGPT-4に戻す まだGPT-4Vではfunction使えないけどね
 ]
 

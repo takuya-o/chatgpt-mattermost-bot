@@ -124,6 +124,25 @@ var AIAdapter = class {
     log.trace("getUserMessage():", message);
     return message;
   }
+  // OpenAIのFunctionsをToolsに書き換える
+  convertFunctionsToTools(functions2, tools) {
+    if (functions2 && functions2.length > 0) {
+      if (!tools) {
+        tools = [];
+      }
+      functions2.forEach((functionCall) => {
+        tools?.push({
+          type: "function",
+          function: {
+            name: functionCall.name,
+            description: functionCall.description,
+            parameters: functionCall.parameters
+          }
+        });
+      });
+    }
+    return tools;
+  }
 };
 function shortenString(text) {
   if (!text) {
@@ -187,21 +206,19 @@ var CohereAdapter = class extends AIAdapter {
     this.baseURL = "https://api.cohere.ai/";
   }
   async createMessage(options) {
-    const chat = await this.cohere.chat(this.mapOpenAIOptionsToCohereOptions(options));
+    const chat = await this.cohere.chat(this.createCohereRequest(options));
     log2.debug("Cohere chat() response: ", chat);
-    return this.mapOpenAICompletion(chat, options.model);
+    return this.createOpenAIChatCompletion(chat, options.model);
   }
-  mapOpenAICompletion(chat, model2) {
+  createOpenAIChatCompletion(chat, model2) {
     const choices = [
       {
         finish_reason: "stop",
         index: 0,
         logprobs: null,
         //ログ確率情報
-        message: {
-          role: "assistant",
-          content: chat.text
-        }
+        message: this.createResponseMessages(chat)
+        //tools_callsもここで作る
       }
     ];
     const inputTokens = chat.meta?.billedUnits?.inputTokens ?? -1;
@@ -220,7 +237,39 @@ var CohereAdapter = class extends AIAdapter {
       model: model2
     };
   }
-  mapOpenAIOptionsToCohereOptions(options) {
+  createResponseMessages(chat) {
+    if (chat.toolCalls && chat.toolCalls.length > 0) {
+      return this.createToolCallMessage(chat.toolCalls);
+    } else {
+      return {
+        role: "assistant",
+        content: chat.text
+      };
+    }
+  }
+  createToolCallMessage(toolCalls) {
+    const openAItoolCalls = [];
+    toolCalls.forEach((toolCall) => {
+      openAItoolCalls.push({
+        id: "",
+        //TODO SDKにはまだない toolCall.generation_id,
+        type: "function",
+        function: {
+          name: this.decodeName(toolCall.name),
+          arguments: JSON.stringify(toolCall.parameters)
+        }
+      });
+    });
+    const message = {
+      role: "assistant",
+      content: null,
+      tool_calls: openAItoolCalls
+    };
+    return message;
+  }
+  createCohereRequest(options) {
+    let tools = this.createCohereTools(options.tools, options.functions);
+    tools = void 0;
     const chatRequest = {
       model: options.model,
       message: this.getUserMessage(this.getLastMessage(options.messages)),
@@ -228,38 +277,60 @@ var CohereAdapter = class extends AIAdapter {
       temperature: options.temperature ?? void 0,
       maxTokens: options.max_tokens ?? void 0,
       p: options.top_p ?? void 0,
-      tools: this.getTools(options.tools),
+      tools,
       chatHistory: this.getChatHistory(options.messages)
       //TODO: getUserMessage()されてから呼ばれている?
     };
+    log2.trace("mapOpenAIOptionsToCohereOptions(): chatRequest", chatRequest);
     return chatRequest;
   }
-  getTools(tools) {
-    if (!tools || tools.length < 0) {
+  createCohereTools(tools, functions2) {
+    tools = this.convertFunctionsToTools(functions2, tools);
+    if (!tools || tools.length === 0) {
       return void 0;
     }
     const cohereTools = [];
     tools.forEach((tool) => {
+      if (tool.type !== "function") {
+        log2.error(`createCohereTools(): ${tool.type} not function.`, tool);
+        return;
+      }
       let parameterDefinitions;
       if (tool.function.parameters) {
+        if (tool.function.parameters.type !== "object") {
+          log2.error(`createCohereTools(): parameter.type ${tool.function.parameters.type} is not  'object'`);
+          return;
+        }
+        const props = tool.function.parameters.properties;
         parameterDefinitions = {};
-        for (const paramKey in tool.function.parameters) {
-          const param = tool.function.parameters[paramKey];
-          parameterDefinitions[param.name] = {
-            type: param.type,
+        for (const propsKey in props) {
+          const param = props[propsKey];
+          parameterDefinitions[propsKey] = {
             description: param.description,
+            type: param.type,
             required: param.required
           };
         }
       }
       cohereTools.push({
         description: tool.function.description ?? "",
-        name: tool.function.name,
+        name: this.encodeName(tool.function.name),
+        //tool names can only contain certain characters (A-Za-z0-9_) and can't begin with a digit
         parameterDefinitions
       });
     });
-    log2.debug("Cohere tools", cohereTools);
     return cohereTools;
+  }
+  /*
+   * TypeScriptでCohere.Toolの名前をA-Za-z0-9_以外を__HEXエンコードするプログラム
+   */
+  encodeName(name2) {
+    const encodedName = name2.replaceAll("-", "_");
+    return encodedName;
+  }
+  decodeName(name2) {
+    const decodedName = name2.replaceAll("_", "-");
+    return decodedName;
   }
   getChatHistory(messages) {
     if (messages.length < 1) {
@@ -286,7 +357,6 @@ var CohereAdapter = class extends AIAdapter {
         log2.debug(`getChatHistory(): ${message.role} not yet support.`, message);
       }
     });
-    log2.debug("Cohere chat history", chatHistory);
     return chatHistory;
   }
   async imagesGenerate(_imageGeneratePrams) {
@@ -295,7 +365,10 @@ var CohereAdapter = class extends AIAdapter {
 };
 
 // src/adapters/GoogleGeminiAdapter.ts
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import {
+  FinishReason,
+  GoogleGenerativeAI
+} from "@google/generative-ai";
 import { Log as Log4 } from "debug-level";
 Log4.options({ json: true, colors: true });
 var log3 = new Log4("Gemini");
@@ -320,6 +393,7 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       },
       {
         apiVersion: "v1beta"
+        //v1beta にしかtoolsが無い
       }
     );
     this.baseURL = `https://generativelanguage.googleapis.com/v1/models/${model2}:`;
@@ -329,43 +403,141 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       options.messages.shift()
     ])[0];
     const currentMessages = this.createContents(options.messages);
-    const prompt = this.getUserMessage(this.getLastMessage(options.messages));
-    const generateContentResult = await this.generativeModel.generateContent({
+    const tool = this.createGeminiTool(options.tools, options.functions);
+    let tools = void 0;
+    if (tool) {
+      tools = [tool];
+    }
+    const request = {
       // https://ai.google.dev/api/rest/v1/models/generateContent?hl=ja#request-body
+      // https://ai.google.dev/api/rest/v1beta/models/generateContent?hl=ja
       contents: currentMessages,
       //safetySettings,
       //generationConfig,
-      systemInstruction
-      //tools?: Tool[];
+      systemInstruction,
+      tools
+      // v1betaより
       //toolConfig?: ToolConfig;
-    });
-    log3.trace("GenerateContentResult", generateContentResult);
-    const responseText = generateContentResult.response.text();
-    const choices = this.createChoice(responseText);
-    const usage = await this.getUsage(currentMessages, prompt, responseText);
+    };
+    log3.trace("request", request);
+    const generateContentResponse = await this.generativeModel.generateContent(request);
+    log3.trace("generateContentResponse", generateContentResponse);
+    const { choices, tokenCount: tokenCount2 } = this.createChoices(generateContentResponse.response.candidates);
+    const usage = await this.getUsage(currentMessages, tokenCount2);
     return {
       id: "",
+      choices,
       created: 0,
+      model: options.model,
+      system_fingerprint: "",
       object: "chat.completion",
       //OputAI固定値
-      choices,
-      usage,
-      model: options.model
+      usage
     };
+  }
+  createChoices(candidates) {
+    let tokenCount2 = 0;
+    const choices = [];
+    candidates?.forEach((candidate) => {
+      tokenCount2 += 0;
+      let content = null;
+      let toolCalls = void 0;
+      if (candidate.finishReason !== FinishReason.STOP && candidate.finishReason !== FinishReason.MAX_TOKENS) {
+        log3.error(`Abnormal fihishReson ${candidate.finishReason}`);
+        return;
+      }
+      candidate.content.parts.forEach((part) => {
+        if (part.functionCall) {
+          if (!toolCalls) {
+            toolCalls = [];
+          }
+          toolCalls.push({
+            id: "",
+            type: "function",
+            function: {
+              name: part.functionCall.name.replaceAll("_", "-"),
+              //なぜか、pluginの名前の「-」が「_」になってしまう。
+              arguments: JSON.stringify(part.functionCall.args)
+            }
+          });
+        } else if (part.text) {
+          if (!content) {
+            content = "";
+          }
+          content += part.text;
+        } else {
+          log3.error(`Unexpected part`, part);
+        }
+      });
+      choices.push({
+        index: candidate.index,
+        finish_reason: "stop",
+        //| 'length' | 'tool_calls' | 'content_filter' | 'function_call';
+        logprobs: null,
+        //Choice.Logprobs | null;  //ログ確率情報
+        message: {
+          role: "assistant",
+          //this.convertRoleGeminitoOpenAI(candidate.content.role),
+          content,
+          tool_calls: toolCalls
+        }
+      });
+    });
+    return { choices, tokenCount: tokenCount2 };
+  }
+  createGeminiTool(tools, functions2) {
+    tools = this.convertFunctionsToTools(functions2, tools);
+    if (!tools || tools.length === 0) {
+      return void 0;
+    }
+    const functionDeclarations = [];
+    const geminiTool = {
+      functionDeclarations
+    };
+    tools.forEach((tool) => {
+      if (tool.type !== "function") {
+        log3.error(`Unexpected tool type ${tool.type}`, tool);
+        return;
+      }
+      const properties = {};
+      const props = tool.function.parameters?.properties;
+      for (const propKey in props) {
+        const param = props[propKey];
+        properties[propKey] = {
+          type: param.type,
+          description: param.description
+          //format: param.format,
+          //nullable: param.nullable,
+          //items: param.items,
+          //enum: param.enum,
+          /** Optional. Map of {@link FunctionDeclarationSchema}. */
+          //properties?: { [k: string]: FunctionDeclarationSchema; };
+          //required: param.required,
+          //example:
+        };
+      }
+      const parameters = tool.function.parameters;
+      functionDeclarations.push({
+        name: tool.function.name,
+        description: tool.function.description,
+        parameters
+      });
+    });
+    return geminiTool;
   }
   createContents(messages) {
     const currentMessages = [];
     messages.forEach(async (message) => {
       switch (message.role) {
         case "system":
-          currentMessages.push({ role: "user", parts: [{ text: message.content }] });
+          currentMessages.push({ role: "user", parts: this.createParts(message) });
           currentMessages.push({ role: "model", parts: [{ text: "OKay" }] });
           break;
         case "user":
-          currentMessages.push({ role: "user", parts: [{ text: this.getUserMessage(message) }] });
+          currentMessages.push({ role: "user", parts: this.createParts(message) });
           break;
         case "assistant":
-          currentMessages.push({ role: "model", parts: [{ text: message.content }] });
+          currentMessages.push({ role: "model", parts: this.createParts(message) });
           break;
         case "tool":
         case "function":
@@ -374,31 +546,70 @@ var GoogleGeminiAdapter = class extends AIAdapter {
           break;
       }
     });
-    log3.trace("currentMessages():", currentMessages);
+    log3.trace("currentMessages():", this.mapShotenInlineData(currentMessages));
     return currentMessages;
   }
-  createChoice(responseText) {
-    return [
-      {
-        finish_reason: "stop",
-        index: 0,
-        logprobs: null,
-        //ログ確率情報
-        message: {
-          role: "assistant",
-          content: responseText
-        }
-      }
-    ];
+  mapShotenInlineData(contents) {
+    return contents.map((message) => {
+      const newMessage = {
+        role: message.role,
+        parts: this.mapShotenInlineDataInParts(message.parts)
+      };
+      return newMessage;
+    });
   }
-  async getUsage(history, prompt, responseText) {
-    const msgContent = { role: "user", parts: [{ text: prompt }] };
-    const contents = [...history, msgContent];
+  mapShotenInlineDataInParts(parts) {
+    return parts.map((part) => {
+      let newPart;
+      if (part.text) {
+        newPart = { text: part.text };
+      } else if (part.inlineData) {
+        newPart = {
+          inlineData: {
+            mimeType: part.inlineData.mimeType,
+            data: shortenString(part.inlineData.data) ?? ""
+          }
+        };
+      } else {
+        log3.error("Unexpected Part type", part);
+        throw new Error(`Unexpected Part type ${part}`);
+      }
+      return newPart;
+    });
+  }
+  createParts(openAImessage) {
+    const parts = [];
+    if (!openAImessage || !openAImessage.content) {
+      return parts;
+    }
+    if (typeof openAImessage.content === "string") {
+      parts.push({ text: openAImessage.content });
+    } else {
+      openAImessage.content.forEach((contentPart) => {
+        const contentPartText = contentPart;
+        if (contentPartText.type === "text") {
+          parts.push({ text: contentPartText.text });
+        } else if (contentPartText.type === "image_url") {
+          const conteentPartImage = contentPart;
+          const dataURL = conteentPartImage.image_url.url;
+          const mimeEnd = dataURL.indexOf(";");
+          const mimeType = dataURL.substring("data:".length, mimeEnd);
+          const data = dataURL.substring(mimeEnd + ";base64,".length);
+          parts.push({ inlineData: { mimeType, data } });
+        } else {
+          log3.error(`Ignore unsupported message ${contentPartText.type} type`, contentPartText);
+        }
+      });
+    }
+    return parts;
+  }
+  async getUsage(history, responseTokenCount) {
+    const contents = [...history];
     let inputTokens = -1;
     let outputTokens = -1;
     try {
       inputTokens = (await this.generativeModel.countTokens({ contents })).totalTokens;
-      outputTokens = (await this.generativeModel.countTokens(responseText)).totalTokens;
+      outputTokens = responseTokenCount;
     } catch (error) {
       if (error.message.indexOf("GoogleGenerativeAI Error") >= 0) {
         log3.info("Gemini 1.5 not support countTokens()?", error);
@@ -676,9 +887,13 @@ async function createChatCompletion(messages, functions2 = void 0) {
     max_tokens: chatCompletionOptions.max_tokens,
     temperature: chatCompletionOptions.temperature,
     function_call: chatCompletionOptions.function_call,
-    functions: chatCompletionOptions.functions?.map((func) => func.name),
+    functions: chatCompletionOptions.functions?.map(
+      (func) => `${func.name}(${toStringParameters(func.parameters)}): ${func.description}`
+    ),
     tools_choice: chatCompletionOptions.tool_choice,
-    tools: chatCompletionOptions.tools?.map((tool) => tool.type + " " + tool.function.name)
+    tools: chatCompletionOptions.tools?.map(
+      (tool) => `${tool.type} ${tool.function.name}(${toStringParameters(tool.function.parameters)}): ${tool.function.description}`
+    )
   });
   const chatCompletion = await currentOpenAi.createMessage(chatCompletionOptions);
   openAILog.trace({ chatCompletion });
@@ -687,6 +902,20 @@ async function createChatCompletion(messages, functions2 = void 0) {
     usage: chatCompletion.usage,
     model: chatCompletion.model
   };
+}
+function toStringParameters(parameters) {
+  if (!parameters) {
+    return "";
+  }
+  let string = "";
+  const props = parameters.properties;
+  for (const paramKey in props) {
+    if (string.length > 0) {
+      string += ", ";
+    }
+    string += `${paramKey}:${props[paramKey].type}`;
+  }
+  return string;
 }
 async function createImage(prompt) {
   const createImageOptions = {
@@ -927,6 +1156,9 @@ var MessageCollectPlugin = class extends PluginBase {
       "The number of messages which should be collected. Omit this parameter if you want to collect all messages.",
       true
     );
+    const plugins3 = process.env["PLUGINS"];
+    if (!plugins3 || plugins3.indexOf("message-collect-plugin") === -1)
+      return false;
     return super.setup();
   }
   async runPlugin(args, msgData) {
@@ -1206,10 +1438,7 @@ var plugins2 = [
   new GraphPlugin("graph-plugin", "Generate a graph based on a given description or topic"),
   new ImagePlugin("image-plugin", "Generates an image based on a given image description."),
   new ExitPlugin("exit-plugin", "Says goodbye to the user and wish him a good day."),
-  new MessageCollectPlugin(
-    "message-collect-plugin",
-    "NONEED: Collects messages in the thread for a specific user or time"
-  ),
+  new MessageCollectPlugin("message-collect-plugin", "Collects messages in the thread for a specific user or time"),
   new UnuseImagesPlugin("unuse-images-plugin", 'Ignore images when asked to "ignore images".')
   // 画像を無視してGPT-4に戻す まだGPT-4Vではfunction使えないけどね
 ];
