@@ -78,7 +78,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       tools, // v1betaより
       //toolConfig?: ToolConfig;
     }
-    log.trace('request', request)
+    log.trace('request', JSON.parse(this.shortenLongString(JSON.stringify(request))))
     const generateContentResponse = await this.generativeModel.generateContent(request)
     log.trace('generateContentResponse', generateContentResponse)
 
@@ -95,6 +95,17 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       object: 'chat.completion', //OputAI固定値
       usage,
     }
+  }
+  private shortenLongString(str: string) {
+    // ""で囲まれた1024文字以上を切り詰める
+    const regex = /"(.*?)"/g
+    return str.replace(regex, function (match, content) {
+      if (content.length > 1024) {
+        return `"${content.slice(0, 1024)}..."`
+      } else {
+        return match
+      }
+    })
   }
   private createChoices(candidates: GenerateContentCandidate[] | undefined) {
     //レスポンスメッセージの詰替え
@@ -229,15 +240,25 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       switch (message.role) {
         // To Google ["user", "model", "function", "system"]
         case 'system':
+          //Geminiにsystemは無いので user でごまかすけど、user連打のhistoryもだめなのでmodelでダミーもいれる
           //currentMessages.push({ role: 'system', parts: [{ text: message.content as string }] }) //Geminiにsystemは無い。
-          currentMessages.push({ role: 'user', parts: this.createParts(message) }) //Geminiにsystemは無い。
-          currentMessages.push({ role: 'model', parts: [{ text: 'OKay' }] }) // user連続もだめ
+          currentMessages.push({
+            role: 'user',
+            parts: this.createParts(message, message.name ? `${message.name} says: ` : ''),
+          })
+          currentMessages.push({ role: 'model', parts: [{ text: ' ' }] }) // user連続もだめ
           break
         case 'user':
-          currentMessages.push({ role: 'user', parts: this.createParts(message) }) //TODO: inlineData対応
+          currentMessages.push({
+            role: 'user',
+            parts: this.createParts(message, message.name ? `${message.name} says: ` : ''),
+          })
           break
         case 'assistant':
-          currentMessages.push({ role: 'model', parts: this.createParts(message) })
+          currentMessages.push({
+            role: 'model',
+            parts: this.createParts(message, message.name ? `${message.name} says: ` : ''),
+          })
           break
         case 'tool':
         case 'function': //Deprecated
@@ -278,19 +299,22 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
     })
   }
 
-  private createParts(openAImessage: OpenAI.Chat.Completions.ChatCompletionMessageParam | undefined): Part[] {
+  private createParts(
+    openAImessage: OpenAI.Chat.Completions.ChatCompletionMessageParam | undefined,
+    name: string,
+  ): Part[] {
     const parts: Part[] = [] //https://ai.google.dev/api/rest/v1/Content?hl=ja#part
     // TODO: v1beta対応 https://ai.google.dev/api/rest/v1beta/Content?hl=ja#part
     if (!openAImessage || !openAImessage.content) {
       return parts
     }
     if (typeof openAImessage.content === 'string') {
-      parts.push({ text: openAImessage.content })
+      parts.push({ text: name + openAImessage.content })
     } else {
       openAImessage.content.forEach(contentPart => {
         const contentPartText = contentPart as OpenAI.Chat.Completions.ChatCompletionContentPartText
         if (contentPartText.type === 'text') {
-          parts.push({ text: contentPartText.text })
+          parts.push({ text: name + contentPartText.text })
         } else if (contentPartText.type === 'image_url') {
           const conteentPartImage = contentPart as OpenAI.Chat.Completions.ChatCompletionContentPartImage
           // image_url

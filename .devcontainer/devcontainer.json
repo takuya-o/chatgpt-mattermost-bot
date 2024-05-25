@@ -20,6 +20,10 @@
 	// Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.
 	// "remoteUser": "root"
 }
-// 新しいイメージを持ってきたらsudo -E "apt update && apt install git-secrets connect-proxy"や~/.ssh/configが必要
+// 新しいイメージを持ってきたら
+// ID=$(docker ps |awk '$2~/^vsc-/{print $1}')
+// docker exec -u=root $ID sh -c "apt update && apt install git-secrets connect-proxy"
+// docker cp  ~/.ssh/config $ID:/home/node/.ssh/
+// が必要
 // 鍵についてはssh-add -l で確認 
 // 環境変数http_proxyや~/.gitconfigは、コンテナ作成時の値が自動的に登録されている。

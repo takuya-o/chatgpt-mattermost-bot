@@ -155,7 +155,8 @@
 		"recommendations": [
 			"dbaeumer.vscode-eslint",
 			"esbenp.prettier-vscode",
-			"taichi.vscode-textlint"
+            "taichi.vscode-textlint",
+            "ms-azuretools.vscode-docker"
 		]
 	}
 }

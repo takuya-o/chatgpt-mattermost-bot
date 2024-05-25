@@ -248,18 +248,16 @@ var CohereAdapter = class extends AIAdapter {
     }
   }
   createToolCallMessage(toolCalls) {
-    const openAItoolCalls = [];
-    toolCalls.forEach((toolCall) => {
-      openAItoolCalls.push({
-        id: "",
-        //TODO SDKにはまだない toolCall.generation_id,
-        type: "function",
-        function: {
-          name: this.decodeName(toolCall.name),
-          arguments: JSON.stringify(toolCall.parameters)
-        }
-      });
-    });
+    const openAItoolCalls = toolCalls.map((toolCall) => ({
+      // Cohre形式をOpenAI形式に変換
+      id: "",
+      //TODO: toolCall.generation_idを追加予定
+      type: "function",
+      function: {
+        name: this.decodeName(toolCall.name),
+        arguments: JSON.stringify(toolCall.parameters)
+      }
+    }));
     const message = {
       role: "assistant",
       content: null,
@@ -419,7 +417,7 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       // v1betaより
       //toolConfig?: ToolConfig;
     };
-    log3.trace("request", request);
+    log3.trace("request", JSON.parse(this.shortenLongString(JSON.stringify(request))));
     const generateContentResponse = await this.generativeModel.generateContent(request);
     log3.trace("generateContentResponse", generateContentResponse);
     const { choices, tokenCount: tokenCount2 } = this.createChoices(generateContentResponse.response.candidates);
@@ -434,6 +432,16 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       //OputAI固定値
       usage
     };
+  }
+  shortenLongString(str) {
+    const regex = /"(.*?)"/g;
+    return str.replace(regex, function(match, content) {
+      if (content.length > 1024) {
+        return `"${content.slice(0, 1024)}..."`;
+      } else {
+        return match;
+      }
+    });
   }
   createChoices(candidates) {
     let tokenCount2 = 0;
@@ -530,14 +538,23 @@ var GoogleGeminiAdapter = class extends AIAdapter {
     messages.forEach(async (message) => {
       switch (message.role) {
         case "system":
-          currentMessages.push({ role: "user", parts: this.createParts(message) });
-          currentMessages.push({ role: "model", parts: [{ text: "OKay" }] });
+          currentMessages.push({
+            role: "user",
+            parts: this.createParts(message, message.name ? `${message.name} says: ` : "")
+          });
+          currentMessages.push({ role: "model", parts: [{ text: " " }] });
           break;
         case "user":
-          currentMessages.push({ role: "user", parts: this.createParts(message) });
+          currentMessages.push({
+            role: "user",
+            parts: this.createParts(message, message.name ? `${message.name} says: ` : "")
+          });
           break;
         case "assistant":
-          currentMessages.push({ role: "model", parts: this.createParts(message) });
+          currentMessages.push({
+            role: "model",
+            parts: this.createParts(message, message.name ? `${message.name} says: ` : "")
+          });
           break;
         case "tool":
         case "function":
@@ -577,18 +594,18 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       return newPart;
     });
   }
-  createParts(openAImessage) {
+  createParts(openAImessage, name2) {
     const parts = [];
     if (!openAImessage || !openAImessage.content) {
       return parts;
     }
     if (typeof openAImessage.content === "string") {
-      parts.push({ text: openAImessage.content });
+      parts.push({ text: name2 + openAImessage.content });
     } else {
       openAImessage.content.forEach((contentPart) => {
         const contentPartText = contentPart;
         if (contentPartText.type === "text") {
-          parts.push({ text: contentPartText.text });
+          parts.push({ text: name2 + contentPartText.text });
         } else if (contentPartText.type === "image_url") {
           const conteentPartImage = contentPart;
           const dataURL = conteentPartImage.image_url.url;
@@ -764,8 +781,9 @@ async function continueThread(messages, msgData) {
       }
     )
   );
+  const NO_MESSAGE = "Sorry, but it seems I found no valid response.";
   let aiResponse = {
-    message: "Sorry, but it seems I found no valid response.",
+    message: NO_MESSAGE,
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     model: ""
   };
@@ -773,7 +791,7 @@ async function continueThread(messages, msgData) {
   const missingPlugins = /* @__PURE__ */ new Set();
   let isIntermediateResponse = true;
   while (isIntermediateResponse && maxChainLength-- > 0) {
-    const { responseMessage, usage, model: model2 } = await createChatCompletion(messages, functions);
+    const { responseMessage, finishReason, usage, model: model2 } = await createChatCompletion(messages, functions);
     if (responseMessage) {
       aiResponse.model += model2 + " ";
       if (usage && aiResponse.usage) {
@@ -843,7 +861,18 @@ async function continueThread(messages, msgData) {
           })
         );
       } else if (responseMessage.content) {
-        aiResponse.message = responseMessage.content;
+        if (NO_MESSAGE === aiResponse.message) {
+          aiResponse.message = responseMessage.content;
+        } else {
+          aiResponse.message += responseMessage.content;
+        }
+        if (finishReason === "length") {
+          messages.push({
+            role: "assistant",
+            content: responseMessage.content
+          });
+          continue;
+        }
       }
     }
     isIntermediateResponse = false;
@@ -851,15 +880,17 @@ async function continueThread(messages, msgData) {
   return aiResponse;
 }
 async function createChatCompletion(messages, functions2 = void 0) {
-  let tools = false;
+  let useTools = true;
   let currentOpenAi = openai;
   let currentModel = model;
   if (anthropicApiKey) {
-    tools = true;
+    useTools = false;
   } else if (visionModel) {
     messages.some((message) => {
       if (typeof message.content !== "string") {
-        tools = true;
+        if (visionModel.indexOf("gpt-4v") >= 0) {
+          useTools = false;
+        }
         if (openaiVision) {
           currentOpenAi = openaiVision;
         }
@@ -875,13 +906,29 @@ async function createChatCompletion(messages, functions2 = void 0) {
     //TODO: messageのTOKEN数から最大値にする。レスポンス長くなるけど翻訳などが一発になる
     temperature
   };
-  if (functions2) {
-    if (tools) {
-    } else {
+  if (functions2 && useTools) {
+    if (model.indexOf("gpt-3") >= 0) {
       chatCompletionOptions.functions = functions2;
       chatCompletionOptions.function_call = "auto";
+    } else {
+      chatCompletionOptions.tools = [];
+      functions2?.forEach((funciton) => {
+        chatCompletionOptions.tools?.push({ type: "function", function: funciton });
+      });
+      chatCompletionOptions.tool_choice = "auto";
     }
   }
+  logChatCompletionsCreateParameters(chatCompletionOptions);
+  const chatCompletion = await currentOpenAi.createMessage(chatCompletionOptions);
+  openAILog.trace({ chatCompletion });
+  return {
+    responseMessage: chatCompletion.choices?.[0]?.message,
+    usage: chatCompletion.usage,
+    model: chatCompletion.model,
+    finishReason: chatCompletion.choices?.[0]?.finish_reason
+  };
+}
+function logChatCompletionsCreateParameters(chatCompletionOptions) {
   openAILog.trace("chat.completions.create() Parameters", {
     model: chatCompletionOptions.model,
     max_tokens: chatCompletionOptions.max_tokens,
@@ -895,13 +942,6 @@ async function createChatCompletion(messages, functions2 = void 0) {
       (tool) => `${tool.type} ${tool.function.name}(${toStringParameters(tool.function.parameters)}): ${tool.function.description}`
     )
   });
-  const chatCompletion = await currentOpenAi.createMessage(chatCompletionOptions);
-  openAILog.trace({ chatCompletion });
-  return {
-    responseMessage: chatCompletion.choices?.[0]?.message,
-    usage: chatCompletion.usage,
-    model: chatCompletion.model
-  };
 }
 function toStringParameters(parameters) {
   if (!parameters) {
@@ -986,8 +1026,7 @@ var GraphPlugin = class extends PluginBase {
       "A description or topic of the graph. This may also includes style, layout or edge properties"
     );
     const plugins3 = process.env["PLUGINS"];
-    if (!plugins3 || plugins3.indexOf("graph-plugin") === -1)
-      return false;
+    if (!plugins3 || plugins3.indexOf("graph-plugin") === -1) return false;
     return !!this.yFilesGPTServerUrl;
   }
   /* Plugin entry point */
@@ -1078,8 +1117,7 @@ var ImagePlugin = class extends PluginBase {
   setup() {
     this.addPluginArgument("imageDescription", "string", "The description of the image provided by the user");
     const plugins3 = process.env["PLUGINS"];
-    if (!plugins3 || plugins3.indexOf("image-plugin") === -1)
-      return false;
+    if (!plugins3 || plugins3.indexOf("image-plugin") === -1) return false;
     return super.setup();
   }
   async runPlugin(args, msgData) {
@@ -1157,8 +1195,7 @@ var MessageCollectPlugin = class extends PluginBase {
       true
     );
     const plugins3 = process.env["PLUGINS"];
-    if (!plugins3 || plugins3.indexOf("message-collect-plugin") === -1)
-      return false;
+    if (!plugins3 || plugins3.indexOf("message-collect-plugin") === -1) return false;
     return super.setup();
   }
   async runPlugin(args, msgData) {
@@ -1211,14 +1248,13 @@ var UnuseImagesPlugin = class extends PluginBase {
 import tiktoken from "tiktoken-node";
 var enc = tiktoken.encodingForModel("gpt-3.5-turbo");
 function tokenCount(content) {
-  if (!content)
-    return 0;
+  if (!content) return 0;
   const tokens = enc.encode(content);
   return tokens.length;
 }
 
 // src/postMessage.ts
-async function postMessage(msgData, messages) {
+async function postMessage(msgData, messages, meId) {
   const typing = () => wsClient.userTyping(msgData.post.channel_id, (msgData.post.root_id || msgData.post.id) ?? "");
   typing();
   const typingInterval = setInterval(typing, 2e3);
@@ -1315,7 +1351,7 @@ ${lines[i]}~~~
           currentLines += lines[i++];
         }
         botLog.debug(`line done i=${i} currentLinesCount=${currentLinesCount} currentLines=${currentLines}`);
-        currentMessages.push({ role: "user", content: currentLines });
+        currentMessages.push({ role: "user", content: currentLines, name: await userIdToName(msgData.post.user_id) });
         const { message: completion, usage, fileId, props, model: model2 } = await continueThread(currentMessages, msgData);
         answer += `*** No.${++partNo} ***
 ${completion}`;
@@ -1324,7 +1360,7 @@ ${completion}`;
         await newPost(answer, msgData.post, fileId, props);
         answer = "";
         currentMessages.pop();
-        currentMessages.push({ role: "assistant", content: answer });
+        currentMessages.push({ role: "assistant", content: answer, name: await userIdToName(meId) });
         currentMessagesCount.push(currentLinesCount);
         if (usage) {
           sumCurrentMessagesCount += usage.completion_tokens;
@@ -1350,8 +1386,7 @@ Error: ${e.message}`;
     clearInterval(typingInterval);
   }
   function makeUsageMessage(usage, model2 = "") {
-    if (!usage && !model2)
-      return "";
+    if (!usage && !model2) return "";
     let message = `
 ${SYSTEM_MESSAGE_HEADER} `;
     if (usage) {
@@ -1466,7 +1501,7 @@ async function onClientMessage(msg, meId) {
     }
   ];
   await appendThreadPosts(posts, meId, chatmessages, isUnuseImages(meId, posts));
-  await postMessage(msgData, chatmessages);
+  await postMessage(msgData, chatmessages, meId);
 }
 async function appendThreadPosts(posts, meId, chatmessages, unuseImages) {
   for (const threadPost of posts) {
@@ -1483,7 +1518,13 @@ async function appendThreadPosts(posts, meId, chatmessages, unuseImages) {
           await Promise.all(
             threadPost.metadata.files.map(async (file) => {
               const originalUrl = await mmClient.getFileUrl(file.id, NaN);
-              const url = await getBase64Image(originalUrl, mmClient.getToken());
+              const url = await getBase64Image(
+                originalUrl,
+                mmClient.getToken(),
+                file.mime_type,
+                file.width,
+                file.height
+              );
               if (url) {
                 content.push(
                   { type: "image_url", image_url: { url } }
@@ -1496,7 +1537,8 @@ async function appendThreadPosts(posts, meId, chatmessages, unuseImages) {
         if (threadPost.metadata.images) {
           await Promise.all(
             Object.keys(threadPost.metadata.images).map(async (url) => {
-              url = await getBase64Image(url, mmClient.getToken());
+              const postImage = threadPost.metadata.images[url];
+              url = await getBase64Image(url, mmClient.getToken(), postImage.format, postImage.width, postImage.height);
               content.push({ type: "image_url", image_url: { url } });
             })
           );
@@ -1516,7 +1558,7 @@ async function appendThreadPosts(posts, meId, chatmessages, unuseImages) {
     }
   }
 }
-async function getBase64Image(url, token = "") {
+async function getBase64Image(url, token = "", format = "", width = 0, height = 0) {
   const init = {};
   if (token) {
     init.headers = {
@@ -1533,32 +1575,57 @@ async function getBase64Image(url, token = "") {
     return "";
   }
   let buffer = Buffer.from(await response.arrayBuffer());
-  let { width = 0, height = 0, format = "" } = await sharp(buffer).metadata();
-  if (!["png", "jpeg", "webp", "gif"].includes(format)) {
-    matterMostLog.warn(`Unsupported image format: ${format}. Converting to JPEG.`);
-    buffer = await sharp(buffer).jpeg().toBuffer();
-    format = "jpeg";
+  if (!format || ["png", "jpeg", "webp", "gif"].includes(format.replace(/^.+\//, "")) && (width <= 0 || height <= 0)) {
+    const metadata = await sharp(buffer).metadata();
+    width = metadata.width ?? 0;
+    height = metadata.height ?? 0;
+    format = metadata.format ?? "";
   }
+  if (["mov", "mpeg", "mp4", "mpg", "avi", "wmv", "mpegps", "flv"].includes(format.replace(/^.+\//, ""))) {
+    format = toMimeType(format, "video");
+  } else {
+    if (!["png", "jpeg", "webp", "gif"].includes(format.replace(/^.+\//, ""))) {
+      matterMostLog.warn(`Unsupported image format: ${format}. Converting to JPEG.`);
+      buffer = await sharp(buffer).jpeg().toBuffer();
+      ({ format = "", width = 0, height = 0 } = await sharp(buffer).metadata());
+    }
+    buffer = await resizeImage(width, height, buffer);
+    format = toMimeType(format, "image");
+  }
+  const mimeType = format;
+  const base64 = buffer.toString("base64");
+  const dataURL = "data:" + mimeType + ";base64," + base64;
+  return dataURL;
+}
+function toMimeType(format, mime) {
+  if (format.indexOf("/") < 0) {
+    format = `${mime}/${format}`;
+  }
+  return format;
+}
+async function resizeImage(width, height, buffer) {
+  let resize = false;
   const shortEdge = 768;
   const longEdge = 1024;
   if (width > longEdge || height > longEdge) {
     const resizeRatio = longEdge / Math.max(width, height);
     width *= resizeRatio;
     height *= resizeRatio;
+    resize = true;
   }
   if (Math.min(width, height) > shortEdge) {
     const resizeRatio = shortEdge / Math.min(width, height);
     width *= resizeRatio;
     height *= resizeRatio;
+    resize = true;
   }
-  buffer = await sharp(buffer).resize({
-    width: Math.round(width),
-    height: Math.round(height)
-  }).toBuffer();
-  const mimeType = `image/${format}`;
-  const base64 = buffer.toString("base64");
-  const dataURL = "data:" + mimeType + ";base64," + base64;
-  return dataURL;
+  if (resize) {
+    buffer = await sharp(buffer).resize({
+      width: Math.round(width),
+      height: Math.round(height)
+    }).toBuffer();
+  }
+  return buffer;
 }
 async function isMessageIgnored(msgData, meId, previousPosts) {
   if (msgData.post.user_id === meId) {
@@ -1661,5 +1728,6 @@ main().catch((reason) => {
 });
 export {
   LIMIT_TOKENS,
-  SYSTEM_MESSAGE_HEADER
+  SYSTEM_MESSAGE_HEADER,
+  userIdToName
 };

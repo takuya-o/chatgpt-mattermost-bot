@@ -74,7 +74,7 @@ async function onClientMessage(msg: WebSocketMessage<JSONMessageData>, meId: str
   ]
   await appendThreadPosts(posts, meId, chatmessages, isUnuseImages(meId, posts))
 
-  await postMessage(msgData, chatmessages)
+  await postMessage(msgData, chatmessages, meId)
 }
 
 // 今までスレッドのPostを取得してChatMessageに組み立てる
@@ -108,7 +108,13 @@ async function appendThreadPosts(
               //const url = (await mmClient.getFilePublicLink(file.id)).link
               const originalUrl = await mmClient.getFileUrl(file.id, NaN) //これではOpenAIから見えない
               // urlの画像を取得してBASE64エンコードされたURLにする
-              const url = await getBase64Image(originalUrl, mmClient.getToken())
+              const url = await getBase64Image(
+                originalUrl,
+                mmClient.getToken(),
+                file.mime_type,
+                file.width,
+                file.height,
+              )
               if (url) {
                 content.push(
                   { type: 'image_url', image_url: { url } }, //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
@@ -121,8 +127,9 @@ async function appendThreadPosts(
         if (threadPost.metadata.images) {
           await Promise.all(
             Object.keys(threadPost.metadata.images).map(async url => {
+              const postImage = threadPost.metadata.images[url]
               // GPT-4Vの解釈できてリーズナブルな画像形式とサイズに変換
-              url = await getBase64Image(url, mmClient.getToken()) // 元のURLもMattermostのURL
+              url = await getBase64Image(url, mmClient.getToken(), postImage.format, postImage.width, postImage.height) // 元のURLもMattermostのURL
               content.push({ type: 'image_url', image_url: { url } })
             }),
           )
@@ -144,7 +151,14 @@ async function appendThreadPosts(
   }
 }
 
-async function getBase64Image(url: string, token: string = ''): Promise<string> {
+async function getBase64Image(
+  url: string,
+  token: string = '',
+  format: string = '',
+  width: number = 0,
+  height: number = 0,
+): Promise<string> {
+  // formatは、mime_typeのときと拡張子のときがあるから注意
   // fetch the image
   const init: RequestInit = {}
   if (token) {
@@ -161,38 +175,78 @@ async function getBase64Image(url: string, token: string = ''): Promise<string> 
     return ''
   }
   let buffer = Buffer.from(await response.arrayBuffer())
-  let { width = 0, height = 0, format = '' } = await sharp(buffer).metadata()
-  // サポートしている画像形式はPNG, JPEG, WEBP, GIF
-  // see: https://platform.openai.com/docs/guides/vision/what-type-of-files-can-i-upload
-  if (!['png', 'jpeg', 'webp', 'gif'].includes(format)) {
-    matterMostLog.warn(`Unsupported image format: ${format}. Converting to JPEG.`)
-    buffer = await sharp(buffer).jpeg().toBuffer()
-    format = 'jpeg'
+  if (
+    !format ||
+    (['png', 'jpeg', 'webp', 'gif'].includes(format.replace(/^.+\//, '')) && (width <= 0 || height <= 0))
+  ) {
+    // mattermostがサイズを持っていなかったので実物から取る
+    const metadata = await sharp(buffer).metadata() //TODO:ビデオだった場合はsharpどうなるの?
+    width = metadata.width ?? 0
+    height = metadata.height ?? 0
+    format = metadata.format ?? '' //jpeg, png, webp, gif, svg
   }
+  // sharp画像変換ライブラリの対応形式は    PNG, JPEG, WebP, GIF and AVIF
+  // https://www.npmjs.com/package/sharp
+  // OpenAIのサポートしている画像形式はPNG, JPEG, WEBP, GIF
+  // see: https://platform.openai.com/docs/guides/vision/what-type-of-files-can-i-upload
+  // Geminiのサポートしている画像・ビデオ形式は
+  // image/png image/jpeg   video/mov video/mpeg video/mp4 video/mpg video/avi video/wmv video/mpegps video/flv
+  // https://cloud.google.com/vertex-ai/docs/generative-ai/model-reference/gemini?hl=ja
+  if (['mov', 'mpeg', 'mp4', 'mpg', 'avi', 'wmv', 'mpegps', 'flv'].includes(format.replace(/^.+\//, ''))) {
+    //ビデオ
+    format = toMimeType(format, 'video')
+  } else {
+    // 画像
+    if (!['png', 'jpeg', 'webp', 'gif'].includes(format.replace(/^.+\//, ''))) {
+      matterMostLog.warn(`Unsupported image format: ${format}. Converting to JPEG.`)
+      buffer = await sharp(buffer).jpeg().toBuffer() //といってもsharpができるのはAVIFだけ
+      ;({ format = '', width = 0, height = 0 } = await sharp(buffer).metadata())
+    }
+    // 画像の短辺は768px、長辺は2,000px以下に縮小する
+    buffer = await resizeImage(width, height, buffer)
+    format = toMimeType(format, 'image')
+  }
+  // Convert the buffer to a data URL
+  const mimeType = format
+  const base64 = buffer.toString('base64')
+  const dataURL = 'data:' + mimeType + ';base64,' + base64
+  return dataURL
+}
+
+function toMimeType(format: string, mime: string) {
+  // imageやvideo形式が無いときには頭につける
+  if (format.indexOf('/') < 0) {
+    format = `${mime}/${format}`
+  }
+  return format
+}
+
+async function resizeImage(width: number, height: number, buffer: Buffer) {
   // 画像の短辺は768px、長辺は2,000px以下に縮小する
+  let resize = false
   const shortEdge = 768
   const longEdge = 1024 //仕様上は2000 //$0.00765 vs $0.01445 倍違うので
   if (width > longEdge || height > longEdge) {
     const resizeRatio = longEdge / Math.max(width, height)
     width *= resizeRatio
     height *= resizeRatio
+    resize = true
   }
   if (Math.min(width, height) > shortEdge) {
     const resizeRatio = shortEdge / Math.min(width, height)
     width *= resizeRatio
     height *= resizeRatio
+    resize = true
   }
-  buffer = await sharp(buffer)
-    .resize({
-      width: Math.round(width),
-      height: Math.round(height),
-    })
-    .toBuffer()
-  // Convert the buffer to a data URL
-  const mimeType = `image/${format}`
-  const base64 = buffer.toString('base64')
-  const dataURL = 'data:' + mimeType + ';base64,' + base64
-  return dataURL
+  if (resize) {
+    buffer = await sharp(buffer)
+      .resize({
+        width: Math.round(width),
+        height: Math.round(height),
+      })
+      .toBuffer()
+  }
+  return buffer
 }
 
 /**
@@ -309,7 +363,7 @@ const usernameCache: Record<string, { username: string; expireTime: number }> = 
  * Looks up the mattermost username for the given userId. Every username which is looked up will be cached for 5 minutes.
  * @param userId
  */
-async function userIdToName(userId: string): Promise<string> {
+export async function userIdToName(userId: string): Promise<string> {
   let username: string
 
   // check if userId is in cache and not outdated

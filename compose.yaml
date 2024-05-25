@@ -1,6 +1,6 @@
 ---
 services:
-  chatcpt:
+  chatgpt:
     image: ${CI_REGISTRY_IMAGE:-gitlab.example.com/user/chatgpt-mattermost-bot}:${CI_COMMIT_REF_NAME:-local}
     build:
       context: .

@@ -166,8 +166,9 @@ export async function continueThread(
       },
     ),
   )
+  const NO_MESSAGE = 'Sorry, but it seems I found no valid response.'
   let aiResponse: AiResponse = {
-    message: 'Sorry, but it seems I found no valid response.',
+    message: NO_MESSAGE,
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     model: '',
   }
@@ -180,7 +181,7 @@ export async function continueThread(
 
   let isIntermediateResponse = true
   while (isIntermediateResponse && maxChainLength-- > 0) {
-    const { responseMessage, usage, model } = await createChatCompletion(messages, functions)
+    const { responseMessage, finishReason, usage, model } = await createChatCompletion(messages, functions)
     //chatCompletion.choices?.[0]?.messageで同じログが出ている log.trace("responseMessage: ", responseMessage)
     if (responseMessage) {
       aiResponse.model += model + ' '
@@ -252,7 +253,20 @@ export async function continueThread(
           }),
         )
       } else if (responseMessage.content) {
-        aiResponse.message = responseMessage.content
+        if (NO_MESSAGE === aiResponse.message) {
+          aiResponse.message = responseMessage.content //最初のときは上書き
+        } else {
+          aiResponse.message += responseMessage.content
+        }
+        if (finishReason === 'length') {
+          // MAX_TOKENで切られたので続きがある。
+          messages.push({
+            role: 'assistant',
+            content: responseMessage.content,
+          })
+          //TODO 永遠は怖い maxChainLength++ //maxカウント外なので戻す
+          continue
+        }
       }
     }
 
@@ -274,19 +288,24 @@ export async function createChatCompletion(
   responseMessage: OpenAI.Chat.Completions.ChatCompletionMessage | undefined
   usage: OpenAI.CompletionUsage | undefined
   model: string
+  finishReason: 'function_call' | 'tool_calls' | 'length' | 'stop' | 'content_filter'
 }> {
   //gpt-4-vision-preview への切り替え
-  let tools = false
+  let useTools = true
   let currentOpenAi = openai
   let currentModel = model
   if (anthropicApiKey) {
-    // Antrhopicもtoolsやfunctionsはない vision専用Modelもない
-    tools = true
+    // Antrhopicはtoolsやfunctionsはない vision専用Modelもない
+    useTools = false
   } else if (visionModel) {
+    // もしVision Modelがあるならば
     messages.some((message: OpenAI.Chat.ChatCompletionMessageParam) => {
       if (typeof message.content !== 'string') {
-        // 画像が入っていたので切り替え
-        tools = true
+        // 画像が入っていたのでVision Modelに切り替え
+        if (visionModel.indexOf('gpt-4v') >= 0) {
+          // gpt-4vはtoolsはおろかfunctionsも使えない see: https://platform.openai.com/docs/guides/vision/introduction
+          useTools = false
+        }
         if (openaiVision) {
           currentOpenAi = openaiVision
         }
@@ -301,18 +320,33 @@ export async function createChatCompletion(
     max_tokens: MAX_TOKENS, //TODO: messageのTOKEN数から最大値にする。レスポンス長くなるけど翻訳などが一発になる
     temperature: temperature,
   }
-  if (functions) {
-    if (tools) {
-      // visionモデルはfunctions使えない see: https://platform.openai.com/docs/guides/vision/introduction
-      // // visionモデルはfunctionsでなくてtoolsなのでfuctnionsをtoolsに展開
-      // chatCompletionOptions.tools = []
-      // functions?.forEach(funciton => { chatCompletionOptions.tools?.push({type: 'function', function: funciton}) })
-      // chatCompletionOptions.tool_choice = 'auto'
-    } else {
-      chatCompletionOptions.functions = functions //TODO: tools化
+  if (functions && useTools) {
+    if (model.indexOf('gpt-3') >= 0) {
+      // gpt-3/gpt-3.5/gpt-3.5-turbo などだったらfunctionsを使う
+      chatCompletionOptions.functions = functions
       chatCompletionOptions.function_call = 'auto'
+    } else {
+      // gpt-4以降の新しいモデルならtoolsに展開
+      chatCompletionOptions.tools = []
+      functions?.forEach(funciton => {
+        chatCompletionOptions.tools?.push({ type: 'function', function: funciton })
+      })
+      chatCompletionOptions.tool_choice = 'auto'
     }
   }
+  logChatCompletionsCreateParameters(chatCompletionOptions)
+  const chatCompletion = await currentOpenAi.createMessage(chatCompletionOptions)
+  log.trace({ chatCompletion })
+  return {
+    responseMessage: chatCompletion.choices?.[0]?.message,
+    usage: chatCompletion.usage,
+    model: chatCompletion.model,
+    finishReason: chatCompletion.choices?.[0]?.finish_reason,
+  }
+}
+function logChatCompletionsCreateParameters(
+  chatCompletionOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+) {
   log.trace('chat.completions.create() Parameters', {
     model: chatCompletionOptions.model,
     max_tokens: chatCompletionOptions.max_tokens,
@@ -327,14 +361,8 @@ export async function createChatCompletion(
         `${tool.type} ${tool.function.name}(${toStringParameters(tool.function.parameters)}): ${tool.function.description}`,
     ),
   })
-  const chatCompletion = await currentOpenAi.createMessage(chatCompletionOptions)
-  log.trace({ chatCompletion })
-  return {
-    responseMessage: chatCompletion.choices?.[0]?.message,
-    usage: chatCompletion.usage,
-    model: chatCompletion.model,
-  }
 }
+
 /* Function Parametersのプロパティを文字列に展開する */
 function toStringParameters(parameters?: OpenAI.FunctionParameters) {
   if (!parameters) {

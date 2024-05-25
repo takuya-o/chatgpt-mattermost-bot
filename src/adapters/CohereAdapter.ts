@@ -79,18 +79,15 @@ export class CohereAdapter extends AIAdapter implements AIProvider {
     //	parameters: {'day': '2023-09-29'}
     //	generation_id: 4807c924-9003-4d6b-8069-eda03962c465
     //}
-    const openAItoolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] = []
-    // Cohre形式をOpenAI形式に変換
-    toolCalls.forEach(toolCall => {
-      openAItoolCalls.push({
-        id: '', //TODO SDKにはまだない toolCall.generation_id,
-        type: 'function',
-        function: {
-          name: this.decodeName(toolCall.name),
-          arguments: JSON.stringify(toolCall.parameters),
-        },
-      })
-    })
+    const openAItoolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] = toolCalls.map(toolCall => ({
+      // Cohre形式をOpenAI形式に変換
+      id: '', //TODO: toolCall.generation_idを追加予定
+      type: 'function',
+      function: {
+        name: this.decodeName(toolCall.name),
+        arguments: JSON.stringify(toolCall.parameters),
+      },
+    }))
     const message: OpenAI.Chat.Completions.ChatCompletionMessage = {
       role: 'assistant',
       content: null,
@@ -200,7 +197,7 @@ export class CohereAdapter extends AIAdapter implements AIProvider {
     if (messages.length < 1) {
       return undefined
     }
-    const chatHistory: Cohere.ChatMessage[] = []
+    const chatHistory: Cohere.Message[] = []
     messages.forEach(message => {
       if (message.role === 'user') {
         chatHistory.push({

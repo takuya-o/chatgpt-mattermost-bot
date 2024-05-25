@@ -1,4 +1,4 @@
-import { LIMIT_TOKENS, SYSTEM_MESSAGE_HEADER } from './botservice.js'
+import { LIMIT_TOKENS, SYSTEM_MESSAGE_HEADER, userIdToName } from './botservice.js'
 import { mmClient, wsClient } from './mm-client.js'
 import { MattermostMessageData } from './types.js'
 import OpenAI from 'openai'
@@ -11,6 +11,7 @@ import { tokenCount } from './tokenCount.js'
 export async function postMessage(
   msgData: MattermostMessageData,
   messages: Array<OpenAI.Chat.ChatCompletionMessageParam>,
+  meId: string,
 ) {
   // start typing
   const typing = () => wsClient.userTyping(msgData.post.channel_id, (msgData.post.root_id || msgData.post.id) ?? '')
@@ -128,7 +129,7 @@ export async function postMessage(
           currentLines += lines[i++]
         }
         botLog.debug(`line done i=${i} currentLinesCount=${currentLinesCount} currentLines=${currentLines}`)
-        currentMessages.push({ role: 'user', content: currentLines })
+        currentMessages.push({ role: 'user', content: currentLines, name: await userIdToName(msgData.post.user_id) })
         const { message: completion, usage, fileId, props, model } = await continueThread(currentMessages, msgData)
         answer += `*** No.${++partNo} ***\n${completion}`
         answer += makeUsageMessage(usage, model)
@@ -136,7 +137,7 @@ export async function postMessage(
         await newPost(answer, msgData.post, fileId, props)
         answer = ''
         currentMessages.pop() // 最後のuser messageを削除
-        currentMessages.push({ role: 'assistant', content: answer }) // 今の答えを保存
+        currentMessages.push({ role: 'assistant', content: answer, name: await userIdToName(meId) }) // 今の答えを保存
         currentMessagesCount.push(currentLinesCount)
         if (usage) {
           sumCurrentMessagesCount += usage.completion_tokens
