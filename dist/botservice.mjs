@@ -243,7 +243,9 @@ var CohereAdapter = class extends AIAdapter {
     } else {
       return {
         role: "assistant",
-        content: chat.text
+        content: chat.text,
+        refusal: null
+        // アシスタントからの拒否メッセージ
       };
     }
   }
@@ -261,7 +263,9 @@ var CohereAdapter = class extends AIAdapter {
     const message = {
       role: "assistant",
       content: null,
-      tool_calls: openAItoolCalls
+      tool_calls: openAItoolCalls,
+      refusal: null
+      // アシスタントからの拒否メッセージ
     };
     return message;
   }
@@ -365,7 +369,8 @@ var CohereAdapter = class extends AIAdapter {
 // src/adapters/GoogleGeminiAdapter.ts
 import {
   FinishReason,
-  GoogleGenerativeAI
+  GoogleGenerativeAI,
+  SchemaType
 } from "@google/generative-ai";
 import { Log as Log4 } from "debug-level";
 Log4.options({ json: true, colors: true });
@@ -487,7 +492,9 @@ var GoogleGeminiAdapter = class extends AIAdapter {
           role: "assistant",
           //this.convertRoleGeminitoOpenAI(candidate.content.role),
           content,
-          tool_calls: toolCalls
+          tool_calls: toolCalls,
+          refusal: null
+          // アシスタントからの拒否メッセージ
         }
       });
     });
@@ -524,7 +531,9 @@ var GoogleGeminiAdapter = class extends AIAdapter {
           //example:
         };
       }
-      const parameters = tool.function.parameters;
+      let parameters = tool.function.parameters;
+      this.convertType(tool, parameters);
+      parameters = this.workaroundObjectNoParameters(parameters);
       functionDeclarations.push({
         name: tool.function.name,
         description: tool.function.description,
@@ -533,10 +542,31 @@ var GoogleGeminiAdapter = class extends AIAdapter {
     });
     return geminiTool;
   }
+  workaroundObjectNoParameters(parameters) {
+    if (parameters?.type === SchemaType.OBJECT && Object.keys(parameters?.properties).length === 0) {
+      parameters = void 0;
+    }
+    return parameters;
+  }
+  convertType(tool, parameters) {
+    const typeMapping = {
+      object: SchemaType.OBJECT,
+      string: SchemaType.STRING,
+      number: SchemaType.NUMBER,
+      integer: SchemaType.INTEGER,
+      boolean: SchemaType.BOOLEAN,
+      array: SchemaType.ARRAY
+    };
+    const paramType = tool.function.parameters?.type;
+    if (paramType && typeMapping[paramType]) {
+      parameters.type = typeMapping[paramType];
+    }
+  }
   createContents(messages) {
     const currentMessages = [];
     messages.forEach(async (message) => {
       switch (message.role) {
+        // To Google ["user", "model", "function", "system"]
         case "system":
           currentMessages.push({
             role: "user",
@@ -558,6 +588,7 @@ var GoogleGeminiAdapter = class extends AIAdapter {
           break;
         case "tool":
         case "function":
+        //Deprecated
         default:
           log3.error(`getChatHistory(): ${message.role} not yet support.`, message);
           break;
@@ -762,29 +793,12 @@ function registerChatPlugin(plugin) {
   });
 }
 async function continueThread(messages, msgData) {
-  openAILog.trace(
-    "messsages: ",
-    JSON.parse(JSON.stringify(messages)).map(
-      //シリアライズでDeep Copy
-      (message) => {
-        if (typeof message.content !== "string") {
-          message.content?.map((content) => {
-            const url = shortenString(content.image_url?.url);
-            if (url) {
-              ;
-              content.image_url.url = url;
-            }
-            return content;
-          });
-        }
-        return message;
-      }
-    )
-  );
+  logMessages(messages);
   const NO_MESSAGE = "Sorry, but it seems I found no valid response.";
+  const promptTokensDetails = { cached_tokens: 0 };
   let aiResponse = {
     message: NO_MESSAGE,
-    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    usage: { prompt_tokens: 0, completion_tokens: 0, prompt_tokens_details: promptTokensDetails, total_tokens: 0 },
     model: ""
   };
   let maxChainLength = 7;
@@ -797,6 +811,7 @@ async function continueThread(messages, msgData) {
       if (usage && aiResponse.usage) {
         aiResponse.usage.prompt_tokens += usage.prompt_tokens;
         aiResponse.usage.completion_tokens += usage.completion_tokens;
+        aiResponse.usage.prompt_tokens_details.cached_tokens += usage?.prompt_tokens_details?.cached_tokens ? usage.prompt_tokens_details.cached_tokens : 0;
         aiResponse.usage.total_tokens += usage.total_tokens;
       }
       if (responseMessage.function_call) {
@@ -879,6 +894,24 @@ async function continueThread(messages, msgData) {
   }
   return aiResponse;
 }
+function logMessages(messages) {
+  openAILog.trace(
+    "messages: ",
+    //シリアライズでDeep Copy
+    JSON.parse(JSON.stringify(messages)).map((message) => {
+      if (typeof message.content !== "string") {
+        message.content?.forEach((content) => {
+          const url = shortenString(content.image_url?.url);
+          if (url) {
+            ;
+            content.image_url.url = url;
+          }
+        });
+      }
+      return message;
+    })
+  );
+}
 async function createChatCompletion(messages, functions2 = void 0) {
   let useTools = true;
   let currentOpenAi = openai;
@@ -902,19 +935,19 @@ async function createChatCompletion(messages, functions2 = void 0) {
   const chatCompletionOptions = {
     model: currentModel,
     messages,
-    max_tokens: MAX_TOKENS,
-    //TODO: messageのTOKEN数から最大値にする。レスポンス長くなるけど翻訳などが一発になる
     temperature
   };
+  if (currentModel.indexOf("o1") === 0) {
+    chatCompletionOptions.max_completion_tokens = MAX_TOKENS;
+  } else {
+    chatCompletionOptions.max_tokens = MAX_TOKENS;
+  }
   if (functions2 && useTools) {
     if (model.indexOf("gpt-3") >= 0) {
       chatCompletionOptions.functions = functions2;
       chatCompletionOptions.function_call = "auto";
     } else {
-      chatCompletionOptions.tools = [];
-      functions2?.forEach((funciton) => {
-        chatCompletionOptions.tools?.push({ type: "function", function: funciton });
-      });
+      chatCompletionOptions.tools = functions2.map((func) => ({ type: "function", function: func }));
       chatCompletionOptions.tool_choice = "auto";
     }
   }
@@ -1390,7 +1423,11 @@ Error: ${e.message}`;
     let message = `
 ${SYSTEM_MESSAGE_HEADER} `;
     if (usage) {
-      message += ` Prompt:${usage.prompt_tokens} Completion:${usage.completion_tokens} Total:${usage.total_tokens}`;
+      message += ` Prompt:${usage.prompt_tokens} Completion:${usage.completion_tokens} `;
+      if (usage.prompt_tokens_details?.cached_tokens) {
+        message += `Cached:${usage.prompt_tokens_details.cached_tokens} `;
+      }
+      message += `Total:${usage.total_tokens}`;
     }
     if (model2) {
       message += ` Model:${model2}`;
@@ -1653,10 +1690,11 @@ async function isMessageIgnored(msgData, meId, previousPosts) {
 }
 function isUnuseImages(meId, previousPosts) {
   for (let i = previousPosts.length - 1; i >= 0; i--) {
-    if (previousPosts[i].props.bot_images === "stopped") {
+    const post = previousPosts[i];
+    if (post.props.bot_images === "stopped") {
       return true;
     }
-    if (previousPosts[i].user_id === meId || previousPosts[i].message.includes(name)) {
+    if (post.user_id === meId || post.message.includes(name)) {
       return false;
     }
   }

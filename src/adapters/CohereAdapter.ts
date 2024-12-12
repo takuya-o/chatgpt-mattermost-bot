@@ -68,6 +68,7 @@ export class CohereAdapter extends AIAdapter implements AIProvider {
       return {
         role: 'assistant',
         content: chat.text,
+        refusal: null, // アシスタントからの拒否メッセージ
       }
     }
   }
@@ -92,6 +93,7 @@ export class CohereAdapter extends AIAdapter implements AIProvider {
       role: 'assistant',
       content: null,
       tool_calls: openAItoolCalls,
+      refusal: null, // アシスタントからの拒否メッセージ
     }
     return message
   }
@@ -207,12 +209,12 @@ export class CohereAdapter extends AIAdapter implements AIProvider {
       } else if (message.role === 'system') {
         chatHistory.push({
           role: 'SYSTEM',
-          message: message.content,
+          message: message.content as string,
         })
       } else if (message.role === 'assistant') {
         chatHistory.push({
           role: 'CHATBOT',
-          message: message.content ?? '',
+          message: (message.content ?? '') as string,
         })
       } else {
         // "function" | "tool"

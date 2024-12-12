@@ -20,7 +20,7 @@
 
 ![A chat window in Mattermost showing the chat between the OpenAI bot and "yGuy"](./mattermost-chat.png)
 
-The bot can talk to you like a regular mattermost user. It's like having chat.openai.com built collaboratively built into Mattermost!
+The bot can talk to you like a regular mattermost user. It's like having ``chat.openai.com`` built collaboratively built into Mattermost!
 But that's not all, you can also use it to generate images via Dall-E or diagram visualizations via a yFiles plugin!
 
 Here's how to get the bot running - it's easy if you have a Docker host.
@@ -65,7 +65,7 @@ or when [running the docker image](#using-the-ready-made-docker-image) or when c
 | COHERE_API_KEY       | no       | `0123456789abcdefghijklmno`  | The Cohere API key to authenticate. If OPENAI_API_KEY is also set, the original OpenAI is used for vision or image generation.                                                                     |
 | GOOGLE_API_KEY       | no       | `0123456789abcdefghijklmno`  | The Gemini API key to authenticate. If OPENAI_API_KEY is also set, the original OpenAI is used for vision or image generation. Tested model is only 'gemini-1.5-pro-latest''                       |
 | YFILES_SERVER_URL    | no       | `http://localhost:3835`      | The URL to the yFiles graph service for embedding auto-generated diagrams.                                                                                                                         |
-| NODE_EXTRA_CA_CERTS  | no       | `/file/to/cert.crt`          | a link to a certificate file to pass to node.js for authenticating self-signed certificates                                                                                                        |
+| NODE_EXTRA_CA_CERTS  | no       | `/file/to/cert.crt`          | a link to a certificate file to pass to ``node.js`` for authenticating self-signed certificates                                                                                                        |
 | MATTERMOST_BOTNAME   | no       | `"@chatgpt"`                 | the name of the bot user in Mattermost, defaults to '@chatgpt'                                                                                                                                     |
 | PLUGINS              | no       | `graph-plugin, image-plugin` | The enabled plugins of the bot. By default all plugins (grpah-plugin and image-plugin) are enabled.                                                                                                |
 | DEBUG_LEVEL          | no       | `TRACE`                      | a debug level used for logging activity, defaults to `INFO`                                                                                                                                        |
@@ -219,7 +219,7 @@ docker compose down
 
 
 ## Deploy to Kubernetes with Helm
-The chatgpt-mattermost-bot chart deploys a containerized chatgpt-mattermost-bot instance which will connect to a running mattermost container in the same kubernetes cluster.  Chart uses 'mattermost-team-edition' and the 'mattermost' namespace by default.  Uses environment variables MATTERMOST_TOKEN and OPENAI_API_KEY. 
+The chatgpt-mattermost-bot chart deploys a containerized chatgpt-mattermost-bot instance which will connect to a running mattermost container in the same Kubernetes cluster.  Chart uses 'mattermost-team-edition' and the 'mattermost' namespace by default.  Uses environment variables MATTERMOST_TOKEN and OPENAI_API_KEY. 
 ```bash
 helm upgrade chatgpt-mattermost-bot ./helm/chatgpt-mattermost-bot \
   --create-namespace \

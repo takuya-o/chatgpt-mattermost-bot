@@ -10,6 +10,7 @@ import {
   GenerativeModel,
   GoogleGenerativeAI,
   Part,
+  SchemaType,
   Tool,
 } from '@google/generative-ai'
 import { Log } from 'debug-level'
@@ -157,6 +158,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
           role: 'assistant', //this.convertRoleGeminitoOpenAI(candidate.content.role),
           content,
           tool_calls: toolCalls,
+          refusal: null, // アシスタントからの拒否メッセージ
         },
       })
     })
@@ -211,11 +213,10 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
           //example:
         }
       }
-
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const parameters: FunctionDeclarationSchema = tool.function.parameters as any
+      let parameters: FunctionDeclarationSchema | undefined = tool.function.parameters as any
       // {
-      //   type: FunctionDeclarationSchemaType.STRING, //OpenAIではリターン値の型指定はない
+      //   type: FunctionDeclarationSchemaType.STRING, //OpenAIではリターン値の型指定はない SchemaType に変わった
       //   //省略可 format: 'fload', //int32, int64...
       //   description: tool.function.description, //省略可
       //   properties, //省略可 {"name": "wrench", "mass": "1.3kg", "count": "3" }, //OBJECTでのプロパティ
@@ -224,7 +225,8 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       //   //省略可 emum: [ "EAST", "NORTH", "SOUTH", "WEST"], //STRINGでの有効値
       //   //省略可 items: Schema, //ARRAYの要素スキーマ
       // }
-
+      this.convertType(tool, parameters)
+      parameters = this.workaroundObjectNoParameters(parameters)
       functionDeclarations.push({
         name: tool.function.name,
         description: tool.function.description,
@@ -232,6 +234,35 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       })
     })
     return geminiTool
+  }
+
+  private workaroundObjectNoParameters(parameters: FunctionDeclarationSchema | undefined) {
+    if (parameters?.type === SchemaType.OBJECT && Object.keys(parameters?.properties).length === 0) {
+      // [400 Bad Request] * GenerateContentRequest.tools[0].function_declarations[0].parameters.properties: should be non-empty for OBJECT type 対策
+      // https://ai.google.dev/api/rest/v1beta/cachedContents?hl=ja#Schema では、parameters.properties は省略可能となっているが、d.tsは違う
+      // ので、OBJECTだけど、プロパティが無い、パラメータはなきものにする。
+      parameters = undefined
+    }
+    return parameters
+  }
+
+  private convertType(
+    tool: OpenAI.Chat.Completions.ChatCompletionTool,
+    parameters: FunctionDeclarationSchema | undefined,
+  ) {
+    // https://ai.google.dev/api/rest/v1beta/cachedContents?hl=ja#type
+    const typeMapping: Record<string, SchemaType> = {
+      object: SchemaType.OBJECT,
+      string: SchemaType.STRING,
+      number: SchemaType.NUMBER,
+      integer: SchemaType.INTEGER,
+      boolean: SchemaType.BOOLEAN,
+      array: SchemaType.ARRAY,
+    }
+    const paramType = tool.function.parameters?.type as unknown as string | undefined
+    if (paramType && typeMapping[paramType]) {
+      parameters!.type = typeMapping[paramType]
+    }
   }
 
   private createContents(messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]) {

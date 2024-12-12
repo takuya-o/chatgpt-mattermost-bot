@@ -167,7 +167,11 @@ export async function postMessage(
     if (!usage && !model) return ''
     let message = `\n${SYSTEM_MESSAGE_HEADER} `
     if (usage) {
-      message += ` Prompt:${usage.prompt_tokens} Completion:${usage.completion_tokens} Total:${usage.total_tokens}`
+      message += ` Prompt:${usage.prompt_tokens} Completion:${usage.completion_tokens} `
+      if (usage.prompt_tokens_details?.cached_tokens) {
+        message += `Cached:${usage.prompt_tokens_details.cached_tokens} `
+      }
+      message += `Total:${usage.total_tokens}`
     }
     if (model) {
       message += ` Model:${model}`

@@ -77,7 +77,15 @@ async function onClientMessage(msg: WebSocketMessage<JSONMessageData>, meId: str
   await postMessage(msgData, chatmessages, meId)
 }
 
-// 今までスレッドのPostを取得してChatMessageに組み立てる
+/**
+ * Appends thread posts to the chat messages array, formatting them based on the content and metadata.
+ * 今までスレッドのPostを取得してChatMessageに組み立てる
+ *
+ * @param posts - An array of Post objects to be appended.
+ * @param meId - The ID of the current user (bot).
+ * @param chatmessages - An array of chat completion message parameters where the formatted messages will be appended.
+ * @param unuseImages - A boolean indicating whether to omit images from the messages.
+ */
 async function appendThreadPosts(
   posts: Post[],
   meId: string,
@@ -151,6 +159,16 @@ async function appendThreadPosts(
   }
 }
 
+/**
+ * 画像をBase64形式で取得します。
+ *
+ * @param url - 画像のURL。
+ * @param token - 認証トークン（任意）。
+ * @param format - 画像フォーマット（任意）。
+ * @param width - 画像の幅（任意）。
+ * @param height - 画像の高さ（任意）。
+ * @returns Base64形式の画像データ。
+ */
 async function getBase64Image(
   url: string,
   token: string = '',
@@ -213,8 +231,15 @@ async function getBase64Image(
   return dataURL
 }
 
+/**
+ * 指定された形式をMIMEタイプに変換します。
+ *
+ * @param format - 変換したいファイル形式を表す文字列。
+ * @param mime - MIMEタイプのプレフィックス（例: 'image', 'video'）。
+ * @returns 正しく形式化されたMIMEタイプ。
+ */
 function toMimeType(format: string, mime: string) {
-  // imageやvideo形式が無いときには頭につける
+  // 形式が既に "/" を含んでいない場合、imageやvideoなどのプレフィックスを追加する
   if (format.indexOf('/') < 0) {
     format = `${mime}/${format}`
   }
@@ -298,13 +323,21 @@ async function isMessageIgnored(msgData: MattermostMessageData, meId: string, pr
   return true // スレッドにいるがメンションされていない場合
 }
 
+/**
+ * 画像を使用しないかどうかを判定します。
+ *
+ * @param meId - 自分のユーザーID。
+ * @param previousPosts - 過去の投稿の配列。
+ * @returns 画像を使用しない場合はtrue、使用する場合はfalse。
+ */
 function isUnuseImages(meId: string, previousPosts: Post[]): boolean {
   for (let i = previousPosts.length - 1; i >= 0; i--) {
+    const post = previousPosts[i]
     // we were asked to stop participating in the conversation
-    if (previousPosts[i].props.bot_images === 'stopped') {
+    if (post.props.bot_images === 'stopped') {
       return true // 会話で画像を使用しないように要求された場合
     }
-    if (previousPosts[i].user_id === meId || previousPosts[i].message.includes(name)) {
+    if (post.user_id === meId || post.message.includes(name)) {
       // we are in a thread were we are actively participating, or we were mentioned in the thread => respond
       return false // アクティブに参加している場合またはスレッドでメンションされている場合は返信する
     }

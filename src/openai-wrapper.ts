@@ -146,30 +146,12 @@ export async function continueThread(
   messages: OpenAI.Chat.ChatCompletionMessageParam[],
   msgData: MattermostMessageData,
 ): Promise<AiResponse> {
-  // 画像データのdata:image/png;base64 messages[].content.image_url.url
-  log.trace(
-    'messsages: ',
-    (JSON.parse(JSON.stringify(messages)) as OpenAI.Chat.ChatCompletionMessageParam[]).map(
-      //シリアライズでDeep Copy
-      message => {
-        if (typeof message.content !== 'string') {
-          // ログでは長いurlの文字列を短くする
-          message.content?.map(content => {
-            const url = shortenString((content as OpenAI.Chat.ChatCompletionContentPartImage).image_url?.url)
-            if (url) {
-              ;(content as OpenAI.Chat.ChatCompletionContentPartImage).image_url.url = url
-            }
-            return content
-          })
-        }
-        return message
-      },
-    ),
-  )
+  logMessages(messages)
   const NO_MESSAGE = 'Sorry, but it seems I found no valid response.'
+  const promptTokensDetails: OpenAI.Completions.CompletionUsage.PromptTokensDetails = { cached_tokens: 0 }
   let aiResponse: AiResponse = {
     message: NO_MESSAGE,
-    usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    usage: { prompt_tokens: 0, completion_tokens: 0, prompt_tokens_details: promptTokensDetails, total_tokens: 0 },
     model: '',
   }
 
@@ -188,6 +170,9 @@ export async function continueThread(
       if (usage && aiResponse.usage) {
         aiResponse.usage.prompt_tokens += usage.prompt_tokens
         aiResponse.usage.completion_tokens += usage.completion_tokens
+        aiResponse.usage.prompt_tokens_details!.cached_tokens! += usage?.prompt_tokens_details?.cached_tokens
+          ? usage.prompt_tokens_details.cached_tokens
+          : 0
         aiResponse.usage.total_tokens += usage.total_tokens
       }
       // function_callは古い 新しいのは tools_calls[].functionなので、そちらにする
@@ -275,7 +260,30 @@ export async function continueThread(
 
   return aiResponse
 }
-
+/**
+ * Logs the provided messages array after serializing and shortening long image URLs.
+ *
+ * @param {OpenAI.Chat.Completions.ChatCompletionMessageParam[]} messages - An array of chat completion messages.
+ */
+function logMessages(messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[]) {
+  log.trace(
+    'messages: ',
+    //シリアライズでDeep Copy
+    (JSON.parse(JSON.stringify(messages)) as OpenAI.Chat.ChatCompletionMessageParam[]).map(message => {
+      if (typeof message.content !== 'string') {
+        // 画像データのdata:image/png;base64 messages[].content.image_url.url
+        // ログでは長いurlの文字列を短くする
+        message.content?.forEach(content => {
+          const url = shortenString((content as OpenAI.Chat.ChatCompletionContentPartImage).image_url?.url)
+          if (url) {
+            ;(content as OpenAI.Chat.ChatCompletionContentPartImage).image_url.url = url
+          }
+        })
+      }
+      return message
+    }),
+  )
+}
 /**
  * Creates a openAI chat model response.
  * @param messages The message history the response is created for.
@@ -317,8 +325,14 @@ export async function createChatCompletion(
   const chatCompletionOptions: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
     model: currentModel,
     messages: messages,
-    max_tokens: MAX_TOKENS, //TODO: messageのTOKEN数から最大値にする。レスポンス長くなるけど翻訳などが一発になる
     temperature: temperature,
+  }
+  //TODO: messageのTOKEN数から最大値にする。レスポンス長くなるけど翻訳などが一発になる
+  if (currentModel.indexOf('o1') === 0) {
+    chatCompletionOptions.max_completion_tokens = MAX_TOKENS
+  } else {
+    // gpt-4o では、こちらでないとエラー
+    chatCompletionOptions.max_tokens = MAX_TOKENS
   }
   if (functions && useTools) {
     if (model.indexOf('gpt-3') >= 0) {
@@ -327,10 +341,7 @@ export async function createChatCompletion(
       chatCompletionOptions.function_call = 'auto'
     } else {
       // gpt-4以降の新しいモデルならtoolsに展開
-      chatCompletionOptions.tools = []
-      functions?.forEach(funciton => {
-        chatCompletionOptions.tools?.push({ type: 'function', function: funciton })
-      })
+      chatCompletionOptions.tools = functions.map(func => ({ type: 'function', function: func }))
       chatCompletionOptions.tool_choice = 'auto'
     }
   }
@@ -344,6 +355,11 @@ export async function createChatCompletion(
     finishReason: chatCompletion.choices?.[0]?.finish_reason,
   }
 }
+/**
+ * Logs the parameters used for creating a chat completion in OpenAI.
+ *
+ * @param chatCompletionOptions - The options provided to create a chat completion.
+ */
 function logChatCompletionsCreateParameters(
   chatCompletionOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
 ) {
