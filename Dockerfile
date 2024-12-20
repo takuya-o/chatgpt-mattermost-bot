@@ -1,6 +1,8 @@
 # NPM builder image
-FROM node:20-slim as npm_builder
-#20.3.0-bookworm-slim (Debian 12)
+FROM node:22-bookworm-slim AS npm_builder
+#22.12.0-bookworm-slim (Debian 12)
+#22-bookworm-slim, 22-slim, 22.12-bookworm-slim, 22.12-slim, 22.12.0-bookworm-slim, 22.12.0-slim, jod-bookworm-slim, jod-slim, lts-bookworm-slim, lts-slim
+# bookworm = Debian12
 
 WORKDIR /app
 COPY [ "package.json", "package-lock.json", ".npmrc", \
@@ -18,7 +20,9 @@ RUN rm -rf node_modules/ && npm ci --omit dev
 
 
 # NPM runtime image
-FROM node:20-slim as npm_runtime
+# See: https://github.com/GoogleContainerTools/distroless/tree/main/examples/nodejs
+# For DEBUG: docker run -it --entrypoint=sh gcr.io/distroless/nodejs22-debian12:debug-nonroot
+FROM gcr.io/distroless/nodejs22-debian12:nonroot AS npm_runtime
 
 WORKDIR /app
 
@@ -26,11 +30,11 @@ ARG NODE_ENV=production
 ENV NODE_ENV $NODE_ENV
 ENV PLUGINS=image-plugin,graph-plugin
 
-# Avoid running as root:
-USER node
-
-COPY --from=npm_builder [ "/app/node_modules/", "./node_modules/" ]
-COPY --from=npm_builder [ "/app/dist/", "./src/" ]
+COPY --chown=nonroot:nonroot --from=npm_builder [ "/app/node_modules/", "./node_modules/" ]
+COPY --chown=nonroot:nonroot --from=npm_builder [ "/app/dist/", "./src/" ]
 COPY [ "./license.md", "./" ]
 
-ENTRYPOINT [ "node", "src/botservice.mjs" ]
+# Avoid running as root:
+USER nonroot
+
+CMD [ "src/botservice.mjs" ]
