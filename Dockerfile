@@ -37,4 +37,4 @@ COPY [ "./license.md", "./" ]
 # Avoid running as root:
 USER nonroot
 
-CMD [ "src/botservice.mjs" ]
+CMD [ "src/MultiInstance.mjs" ]

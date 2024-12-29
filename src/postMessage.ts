@@ -1,20 +1,24 @@
-import { LIMIT_TOKENS, SYSTEM_MESSAGE_HEADER, userIdToName } from './botservice.js'
-import { mmClient, wsClient } from './mm-client.js'
+import { BotService, SYSTEM_MESSAGE_HEADER } from './BotService.js'
 import { MattermostMessageData } from './types.js'
 import OpenAI from 'openai'
 import { Post } from '@mattermost/types/posts'
 import { botLog } from './logging.js'
-import { continueThread } from './openai-wrapper.js'
 import { tokenCount } from './tokenCount.js'
 
 // eslint-disable-next-line max-lines-per-function
 export async function postMessage(
+  botService: BotService,
   msgData: MattermostMessageData,
   messages: Array<OpenAI.Chat.ChatCompletionMessageParam>,
   meId: string,
+  MAX_PROMPT_TOKENS: number,
 ) {
   // start typing
-  const typing = () => wsClient.userTyping(msgData.post.channel_id, (msgData.post.root_id || msgData.post.id) ?? '')
+  const typing = () =>
+    botService
+      .getMattermostClient()
+      .getWsClient()
+      .userTyping(msgData.post.channel_id, (msgData.post.root_id || msgData.post.id) ?? '')
   typing()
   const typingInterval = setInterval(typing, 2000)
 
@@ -28,19 +32,19 @@ export async function postMessage(
       sumMessagesCount: sumMessagesCount,
       messagesCount,
       systemMessage,
-    } = expireMessages(messages, sumMessagesCount, messagesCount, systemMessage)) //古いメッセージを消去
+    } = expireMessages(messages, sumMessagesCount, messagesCount, systemMessage, MAX_PROMPT_TOKENS)) //古いメッセージを消去
     if (systemMessage !== SYSTEM_MESSAGE_HEADER) {
-      newPost(systemMessage, msgData.post, undefined, undefined)
+      newPost(botService, systemMessage, msgData.post, undefined, undefined)
     }
-    if (sumMessagesCount >= LIMIT_TOKENS) {
+    if (sumMessagesCount >= MAX_PROMPT_TOKENS) {
       // expireしきっていて最後の user messageだけでも長すぎるので行単位で分割
-      botLog.info('Too long user message', sumMessagesCount, LIMIT_TOKENS)
+      botLog.info('Too long user message', sumMessagesCount, MAX_PROMPT_TOKENS)
       // failsafeチェック
       try {
         answer = await failSafeCheck(messages, answer)
       } catch (e) {
         if (e instanceof TypeError) {
-          newPost(SYSTEM_MESSAGE_HEADER + e.message, msgData.post, undefined, undefined)
+          newPost(botService, SYSTEM_MESSAGE_HEADER + e.message, msgData.post, undefined, undefined)
           return
         }
         throw e
@@ -64,7 +68,7 @@ export async function postMessage(
         // failsafe
         botLog.error('No contents', messages[1].content)
         answer += 'No contents.'
-        newPost(SYSTEM_MESSAGE_HEADER + answer, msgData.post, undefined, undefined)
+        newPost(botService, SYSTEM_MESSAGE_HEADER + answer, msgData.post, undefined, undefined)
         return
       }
       // 先に行ごとにトークン数も数えておく
@@ -81,10 +85,10 @@ export async function postMessage(
           }
         }
       })
-      if (messagesCount[0] + linesCount[0] >= LIMIT_TOKENS) {
+      if (messagesCount[0] + linesCount[0] >= MAX_PROMPT_TOKENS) {
         botLog.warn('Too long first line', lines[0]) //最初の行ですら長くて無理
         answer += 'Too long first line.\n```\n' + lines[0] + '```\n'
-        newPost(SYSTEM_MESSAGE_HEADER + answer, msgData.post, undefined, undefined)
+        newPost(botService, SYSTEM_MESSAGE_HEADER + answer, msgData.post, undefined, undefined)
         return
       }
       let partNo = 0 // パート分けしてChat
@@ -98,8 +102,8 @@ export async function postMessage(
         let systemMessage = SYSTEM_MESSAGE_HEADER
         while (
           currentMessages.length > 1 &&
-          (sumCurrentMessagesCount + currentLinesCount + linesCount[i] >= LIMIT_TOKENS ||
-            sumCurrentMessagesCount + currentLinesCount > LIMIT_TOKENS / 2)
+          (sumCurrentMessagesCount + currentLinesCount + linesCount[i] >= MAX_PROMPT_TOKENS ||
+            sumCurrentMessagesCount + currentLinesCount > MAX_PROMPT_TOKENS / 2)
         ) {
           // 次の行を足したらトークン数が足りなくなった場合はassitantを消す
           // assistantが半分以上の場合も本体よりassistantの方が多いので消す
@@ -111,33 +115,43 @@ export async function postMessage(
           // 最初のmessageをsystem messageと決め打って、二番目のmessageを消す
           currentMessages = [currentMessages[0], ...currentMessages.slice(2)]
         }
-        if (sumCurrentMessagesCount + currentLinesCount + linesCount[i] >= LIMIT_TOKENS) {
+        if (sumCurrentMessagesCount + currentLinesCount + linesCount[i] >= MAX_PROMPT_TOKENS) {
           // assitant message を 消したけど、まだ足りなかったので、その行は無視
           botLog.warn('Too long line', lines[i])
           systemMessage += `*** No.${++partNo} *** Too long line.\n~~~\n${lines[i]}~~~\n`
-          await newPost(systemMessage, msgData.post, undefined, undefined) //続くので順番維持のため待つ
+          await newPost(botService, systemMessage, msgData.post, undefined, undefined) //続くので順番維持のため待つ
 
           // TODO: 消してしまったassitant messageのroolback
           continue
         }
         if (systemMessage !== SYSTEM_MESSAGE_HEADER) {
-          await newPost(systemMessage, msgData.post, undefined, undefined)
+          await newPost(botService, systemMessage, msgData.post, undefined, undefined)
         }
-        while (i < lines.length && sumCurrentMessagesCount + currentLinesCount + linesCount[i] < LIMIT_TOKENS) {
+        while (i < lines.length && sumCurrentMessagesCount + currentLinesCount + linesCount[i] < MAX_PROMPT_TOKENS) {
           // トークン分まで行を足す
           currentLinesCount += linesCount[i]
           currentLines += lines[i++]
         }
         botLog.debug(`line done i=${i} currentLinesCount=${currentLinesCount} currentLines=${currentLines}`)
-        currentMessages.push({ role: 'user', content: currentLines, name: await userIdToName(msgData.post.user_id) })
-        const { message: completion, usage, fileId, props, model } = await continueThread(currentMessages, msgData)
+        currentMessages.push({
+          role: 'user',
+          content: currentLines,
+          name: await botService.userIdToName(msgData.post.user_id),
+        })
+        const {
+          message: completion,
+          usage,
+          fileId,
+          props,
+          model,
+        } = await botService.getOpenAIWrapper().continueThread(currentMessages, msgData)
         answer += `*** No.${++partNo} ***\n${completion}`
         answer += makeUsageMessage(usage, model)
         botLog.debug('answer=' + answer)
-        await newPost(answer, msgData.post, fileId, props)
+        await newPost(botService, answer, msgData.post, fileId, props)
         answer = ''
         currentMessages.pop() // 最後のuser messageを削除
-        currentMessages.push({ role: 'assistant', content: answer, name: await userIdToName(meId) }) // 今の答えを保存
+        currentMessages.push({ role: 'assistant', content: answer, name: await botService.userIdToName(meId) }) // 今の答えを保存
         currentMessagesCount.push(currentLinesCount)
         if (usage) {
           sumCurrentMessagesCount += usage.completion_tokens
@@ -145,10 +159,16 @@ export async function postMessage(
         botLog.debug('length=' + currentMessages.length)
       }
     } else {
-      const { message: completion, usage, fileId, props, model } = await continueThread(messages, msgData)
+      const {
+        message: completion,
+        usage,
+        fileId,
+        props,
+        model,
+      } = await botService.getOpenAIWrapper().continueThread(messages, msgData)
       answer += completion
       answer += makeUsageMessage(usage, model)
-      await newPost(answer, msgData.post, fileId, props)
+      await newPost(botService, answer, msgData.post, fileId, props)
       botLog.debug('answer=' + answer)
     }
   } catch (e) {
@@ -157,7 +177,7 @@ export async function postMessage(
     if (e instanceof Error) {
       answer += `\nError: ${e.message}`
     }
-    await newPost(answer, msgData.post, undefined, undefined)
+    await newPost(botService, answer, msgData.post, undefined, undefined)
   } finally {
     // stop typing
     clearInterval(typingInterval)
@@ -180,19 +200,23 @@ export async function postMessage(
   }
 }
 async function newPost(
+  botService: BotService,
   answer: string,
   post: Post,
   fileId: string | undefined,
   props: Record<string, string> | undefined,
 ) {
   // botLog.trace({ answer })
-  const newPost = await mmClient.createPost({
-    message: answer,
-    channel_id: post.channel_id,
-    props,
-    root_id: post.root_id || post.id,
-    file_ids: fileId ? [fileId] : undefined,
-  } as Post)
+  const newPost = await botService
+    .getMattermostClient()
+    .getClient()
+    .createPost({
+      message: answer,
+      channel_id: post.channel_id,
+      props,
+      root_id: post.root_id || post.id,
+      file_ids: fileId ? [fileId] : undefined,
+    } as Post)
   botLog.trace({ newPost })
 }
 function calcMessagesTokenCount(messages: Array<OpenAI.Chat.ChatCompletionMessageParam>) {
@@ -238,8 +262,9 @@ function expireMessages(
   sumMessagesCount: number,
   messagesCount: number[],
   systemMessage: string,
+  MAX_PROMPT_TOKENS: number,
 ) {
-  while (messages.length > 2 && sumMessagesCount >= LIMIT_TOKENS) {
+  while (messages.length > 2 && sumMessagesCount >= MAX_PROMPT_TOKENS) {
     // system message以外の一番古いメッセージを取り除く
     botLog.info('Remove message', messages[1])
     systemMessage += mkMessageContentString(messages, 'Forget old message.')

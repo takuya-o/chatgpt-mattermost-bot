@@ -12,38 +12,9 @@ services:
     env_file: .env # Dockerfileでも有効にするために必須
     # .envファイルより環境変数を有効にする場合
     # environment:
-    #   MATTERMOST_URL: ${MATTERMOST_URL}
-    #   MATTERMOST_TOKEN: ${MATTERMOST_TOKEN}
-    #   MATTERMOST_BOTNAME: ${MATTERMOST_BOTNAME}
-    #   OPENAI_API_KEY: ${OPENAI_API_KEY}
-    #   OPENAI_MODEL_NAME: ${OPENAI_MODEL_NAME}
-    #   OPENAI_IMAGE_MODEL_NAME: ${OPENAI_IMAGE_MODEL_NAME}
-    #   OPENAI_VISION_MODEL_NAME: ${OPENAI_VISION_MODEL_NAME}
-    #   OPENAI_MAX_TOKENS: ${OPENAI_MAX_TOKENS}
-    #   MAX_PROMPT_TOKENS: ${MAX_PROMPT_TOKENS}
-    #   PLUGINS: ${PLUGINS}
-    #   AZURE_OPENAI_API_KEY: ${AZURE_OPENAI_API_KEY}
-    #   AZURE_OPENAI_API_INSTANCE_NAME: ${AZURE_OPENAI_API_INSTANCE_NAME}
-    #   AZURE_OPENAI_API_DEPLOYMENT_NAME: ${AZURE_OPENAI_API_DEPLOYMENT_NAME}
-    #   AZURE_OPENAI_API_VERSION: ${AZURE_OPENAI_API_VERSION}
+    #   CONFIG_FILE: ./config.yaml
     #   DEBUG_LEVEL: ${DEBUG_LEVEL}
     #   DEBUG_JSON: ${DEBUG_JSON}
     #   DEBUG_COLORS: ${DEBUG_COLORS}
-
-  cohere:
-    image: ${CI_REGISTRY_IMAGE:-gitlab.example.com/user/chatgpt-mattermost-bot}:${CI_COMMIT_REF_NAME:-local}
-    build:
-      context: .
-      args:
-        NODE_ENV: ${NODE_ENV:-production}
-    restart: always
-    env_file: .env.cohere
-
-  gemini:
-    image: ${CI_REGISTRY_IMAGE:-gitlab.example.com/user/chatgpt-mattermost-bot}:${CI_COMMIT_REF_NAME:-local}
-    build:
-      context: .
-      args:
-        NODE_ENV: ${NODE_ENV:-production}
-    restart: always
-    env_file: .env.gemini
+    volumes:
+      - ./config.yaml:/app/config.yaml

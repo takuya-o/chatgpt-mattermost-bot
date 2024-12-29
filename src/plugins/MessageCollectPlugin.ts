@@ -1,7 +1,8 @@
 import { AiResponse, MattermostMessageData } from '../types.js'
+import { Client4 } from '@mattermost/client'
+import { OpenAIWrapper } from 'src/OpenAIWrapper.js'
 import { PluginBase } from './PluginBase.js'
 import { Post } from '@mattermost/types/lib/posts'
-import { mmClient } from '../mm-client.js'
 
 type MessageCollectArgs = {
   messageCount?: number
@@ -9,7 +10,7 @@ type MessageCollectArgs = {
 }
 
 export class MessageCollectPlugin extends PluginBase<MessageCollectArgs> {
-  setup(): boolean {
+  setup(plugins: string): boolean {
     this.addPluginArgument(
       'lookBackTime',
       'number',
@@ -23,24 +24,31 @@ export class MessageCollectPlugin extends PluginBase<MessageCollectArgs> {
       true,
     )
 
-    const plugins = process.env['PLUGINS']
-    if (!plugins || plugins.indexOf('message-collect-plugin') === -1) return false
+    if (!this.isEnable(plugins, 'message-collect-plugin')) return false
 
-    return super.setup()
+    return super.setup(plugins)
   }
 
-  async runPlugin(args: MessageCollectArgs, msgData: MattermostMessageData): Promise<AiResponse> {
+  async runPlugin(
+    args: MessageCollectArgs,
+    msgData: MattermostMessageData,
+    openAIWrapper: OpenAIWrapper,
+  ): Promise<AiResponse> {
     this.log.trace(args)
     return {
       message: JSON.stringify(
-        await this.getPosts(msgData.post, { lookBackTime: args.lookBackTime, postCount: args.messageCount }),
+        await this.getPosts(
+          msgData.post,
+          { lookBackTime: args.lookBackTime, postCount: args.messageCount },
+          openAIWrapper.getMattemostClient().getClient(),
+        ),
       ),
       intermediate: true,
     }
   }
 
-  async getPosts(refPost: Post, options: { lookBackTime?: number; postCount?: number }) {
-    const thread = await mmClient.getPostThread(refPost.id, true, false, true)
+  async getPosts(refPost: Post, options: { lookBackTime?: number; postCount?: number }, client4: Client4) {
+    const thread = await client4.getPostThread(refPost.id, true, false, true)
 
     let posts: Post[] = [...new Set(thread.order)].map(id => thread.posts[id]).sort((a, b) => a.create_at - b.create_at)
 
@@ -52,7 +60,7 @@ export class MessageCollectPlugin extends PluginBase<MessageCollectArgs> {
     }
 
     const result = []
-    const meId = (await mmClient.getMe()).id
+    const meId = (await client4.getMe())?.id
     for (const threadPost of posts) {
       if (threadPost.user_id === meId) {
         result.push({

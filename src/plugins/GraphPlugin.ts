@@ -1,10 +1,10 @@
 import { AiResponse, MattermostMessageData } from '../types.js'
+import { Client4 } from '@mattermost/client'
 import FormData from 'form-data'
 import OpenAI from 'openai'
+import { OpenAIWrapper } from '../OpenAIWrapper.js'
 import { PluginBase } from './PluginBase.js'
-import { createChatCompletion } from '../openai-wrapper.js'
 import fetch from 'node-fetch'
-import { mmClient } from '../mm-client.js'
 
 type GraphPluginArgs = {
   graphPrompt: string
@@ -34,21 +34,23 @@ export class GraphPlugin extends PluginBase<GraphPluginArgs> {
     'answer with something along the lines of: "Here is the visualization:" and then just add the tag. The user will see the rendered image, but not the JSON. ' +
     'Shortly explain what the diagram is about, but do not state how you constructed the JSON.'
 
-  setup(): boolean {
+  setup(plugins: string): boolean {
     this.addPluginArgument(
       'graphPrompt',
       'string',
       'A description or topic of the graph. This may also includes style, layout or edge properties',
     )
 
-    const plugins = process.env['PLUGINS']
-    if (!plugins || plugins.indexOf('graph-plugin') === -1) return false
-
-    return !!this.yFilesGPTServerUrl
+    if (!this.isEnable(plugins, 'graph-plugin') || !this.yFilesGPTServerUrl) return false
+    return true
   }
 
   /* Plugin entry point */
-  async runPlugin(args: GraphPluginArgs, msgData: MattermostMessageData): Promise<AiResponse> {
+  async runPlugin(
+    args: GraphPluginArgs,
+    msgData: MattermostMessageData,
+    openAIWrapper: OpenAIWrapper,
+  ): Promise<AiResponse> {
     const aiResponse = {
       message: 'Sorry, I could not execute the graph plugin.',
     }
@@ -64,15 +66,19 @@ export class GraphPlugin extends PluginBase<GraphPluginArgs> {
       },
     ]
 
-    const response = await createChatCompletion(chatmessages)
+    const response = await openAIWrapper.createChatCompletion(chatmessages, undefined)
     if (response?.responseMessage?.content) {
-      return await this.processGraphResponse(response.responseMessage.content, msgData.post.channel_id)
+      return await this.processGraphResponse(
+        response.responseMessage.content,
+        msgData.post.channel_id,
+        openAIWrapper.getMattemostClient().getClient(),
+      )
     }
 
     return aiResponse
   }
 
-  private async processGraphResponse(content: string, channelId: string) {
+  private async processGraphResponse(content: string, channelId: string, mattermostClient: Client4) {
     const result: AiResponse = {
       message: content,
     }
@@ -90,7 +96,7 @@ export class GraphPlugin extends PluginBase<GraphPluginArgs> {
 
       try {
         const sanitized = JSON.parse(graphContent)
-        const fileId = await this.jsonToFileId(JSON.stringify(sanitized), channelId)
+        const fileId = await this.jsonToFileId(JSON.stringify(sanitized), channelId, mattermostClient)
         const pre = content.substring(0, replaceStart)
         const post = content.substring(replaceEnd)
 
@@ -127,14 +133,14 @@ export class GraphPlugin extends PluginBase<GraphPluginArgs> {
     })
   }
 
-  async jsonToFileId(jsonString: string, channelId: string) {
+  async jsonToFileId(jsonString: string, channelId: string, mattermostClient: Client4) {
     const svgString = await this.generateSvg(jsonString)
     const form = new FormData()
     form.append('channel_id', channelId)
     form.append('files', Buffer.from(svgString), 'diagram.svg')
     this.log.trace('Appending Diagram SVG', svgString)
-    const response = await mmClient.uploadFile(form)
-    this.log.trace('Uploaded a file with id', response.file_infos[0].id)
-    return response.file_infos[0].id
+    const response = await mattermostClient.uploadFile(form)
+    this.log.trace('Uploaded a file with id', response?.file_infos[0].id)
+    return response?.file_infos[0].id
   }
 }

@@ -1,8 +1,18 @@
+> **Note** 👀
+> - Configuration methods have changed in version 3.
+> - There is no backward compatibility for configurations.
+> - You need to manually rewrite environment variables into `config.yaml`.
+
 ## Enhanced from the [original yGuy/chatgpt-mattermost-bot](https://github.com/yGuy/chatgpt-mattermost-bot)
 
+* Support for multiple bots in a single process. You no longer need to run multiple docker containers to use multiple LLMs.
+
+  ![Screenshot of mattermost left panel.](./multiBotInstance.png )
 * Experimental support Cohere Command R+ that input is text only and Google Gemini 1.5 Pro API that can input text and image
 * Support GPT-4V Vision API
-  + Realization of multimodal text and images in conjunction with image plugins. **Limitation**: The plugins are not possible in threads that have been image attached, Under the 1106 gpt-4-vision-vewview.
+  + Realization of multimodal text and images in conjunction with image plugins.
+
+    **Limitation**: The plugins are not possible in threads that have been image attached, Under the gpt-4-vision-preview 1106.
   ![The screenshot depicts a fictional chat in Mattermost where a user asks a bot to describe a zoo scene, and to create an image that evokes positive emotions; the bot responds with a colorful zoo illustration and a vivid sunset beach scene.](./mattermost-gpt4v.png)
 * No mention required in Direct Message
 * Support Azure OpenAI API
@@ -35,42 +45,124 @@ Andrew Zigler from Mattermost created a [YouTube Video](https://www.youtube.com/
 If you want to learn more about how this plugin came to live, [read the blog post at yWorks.com](https://www.yworks.com/blog/diagramming-with-chatgpt)!
 
 
-## Options
+## Configuration
 
-These are the available options, you can set them as environment variables when running [the script](./src/botservice.ts)
-or when [running the docker image](#using-the-ready-made-docker-image) or when configuring your [docker-compose](#docker-compose) file.
+These are the available options, you can set them in the `config.yaml` file.
+The filename can be changed using the CONFIG_FILE environment variable.
 
-| Name                 | Required | Example Value                | Description                                                                                                                                                                                        |
-|----------------------|----------|------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| MATTERMOST_URL       | yes      | `https://mattermost.server`  | The URL to the server. This is used for connecting the bot to the Mattermost API                                                                                                                   |
-| MATTERMOST_TOKEN     | yes      | `abababacdcdcd`              | The authentication token from the logged in mattermost bot                                                                                                                                         |
-| OPENAI_API_KEY       | yes      | `sk-234234234234234234`      | The OpenAI API key to authenticate with OpenAI                                                                                                                                                     |
-| OPENAI_API_BASE      | no       | `http://example.com:8080/v1` | The address of an OpenAI compatible API. Overrides the default base path (`https://api.openai.com`)          |
-| OPENAI_MODEL_NAME    | no       | `gpt-3.5-turbo`              | The OpenAI or Cohere language model to use, defaults to `gpt-3.5-turbo`                                                                                                                            |
-| OPENAI_MAX_TOKENS    | no       | `2000`                       | The maximum number of tokens to pass to the OpenAI API, defaults to 2000                                                                                                                           |
-| OPENAI_TEMPERATURE   | no       | `0.2`                        | The sampling temperature to use, between 0 and 2, defaults to 1. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic. |
-| MAX_PROMPT_TOKENS    | no       | `2096`                       | Maximum number of prompt tokens, default to 2000. For example on GPT-4 = 8196 - OPENAI_MAX_TOKENS.                                                                                                 |
-| OPENAI_VISION_MODEL_NAME | no   | `gpt-4-vision-preview`       | The OpenAI VISION model to use, defaults to use OPENAI_MODEL_NAME. Use this when you want to change the model when attaching an image.                                                             |
-| OPENAI_IMAGE_MODEL_NAME  | no   | `dall-e-2`                   | The OpenAI IMAGE model to use, defaults to `dall-e-3`                                                                                                                                              |
-| AZURE_OPENAI_API_KEY | no       | `0123456789abcdefghijklmno`  | The Azure OpenAI Service API key to authenticate. If OPENAI_API_KEY is also set, the original OpenAI is used for vision or image generation.                                                       |
-| AZURE_OPENAI_API_INSTANCE_NAME   | no | `example-name`         | The instance name on the Azure OpenAI Service                                                                                                                                                      |
-| AZURE_OPENAI_API_DEPLOYMENT_NAME | no | `gpt-35-turbo`         | The name of the deployed model on the Azure OpenAI Service                                                                                                                                         |
-| AZURE_OPENAI_API_VERSION         | no | `2024-03-01-preview`   | The Azure OpenAI version                                                                                                                                                                           |
-| AZURE_OPENAI_API_VISION_KEY             | no | `0123456789abcdefghijklmno`  | The Azure OpenAI Service API key to authoenticate. If this is set, Azure OpenAI is used for vision.                                                                                   |
-| AZURE_OPENAI_API_VISION_INSTANCE_NAME   | no | `example-name`  | The instance name on the Azure OpenAI Service for Vision API if specially needed                                                                                                                   |
-| AZURE_OPENAI_API_VISION_DEPLOYMENT_NAME | no | `gpt-4v`        | The name of the deployed model on the Azure OpenAI Service for Vision API if specially needed                                                                                                      |
-| AZURE_OPENAI_API_IMAGE_KEY             | no | `0123456789abcdefghijklmno`  | The Azure OpenAI Service API key to authoenticate. If this is set, Azure OpenAI is used for image generation.                                                                          |
-| AZURE_OPENAI_API_IMAGE_INSTANCE_NAME   | no | `example-name`   | The instance name on the Azure OpenAI Service for Image API if specially needed                                                                                                                    |
-| AZURE_OPENAI_API_IMAGE_DEPLOYMENT_NAME | no | `Dalle3`         | The name of the deployed model on the Azure OpenAI Service for Image API if specially needed. DALL-E 3 require 2023-12-01-preview API Version at least                                             |
-| COHERE_API_KEY       | no       | `0123456789abcdefghijklmno`  | The Cohere API key to authenticate. If OPENAI_API_KEY is also set, the original OpenAI is used for vision or image generation.                                                                     |
-| GOOGLE_API_KEY       | no       | `0123456789abcdefghijklmno`  | The Gemini API key to authenticate. If OPENAI_API_KEY is also set, the original OpenAI is used for vision or image generation. Tested model is only 'gemini-1.5-pro-latest''                       |
-| YFILES_SERVER_URL    | no       | `http://localhost:3835`      | The URL to the yFiles graph service for embedding auto-generated diagrams.                                                                                                                         |
-| NODE_EXTRA_CA_CERTS  | no       | `/file/to/cert.crt`          | a link to a certificate file to pass to ``node.js`` for authenticating self-signed certificates                                                                                                        |
-| MATTERMOST_BOTNAME   | no       | `"@chatgpt"`                 | the name of the bot user in Mattermost, defaults to '@chatgpt'                                                                                                                                     |
-| PLUGINS              | no       | `graph-plugin, image-plugin` | The enabled plugins of the bot. By default all plugins (grpah-plugin and image-plugin) are enabled.                                                                                                |
-| DEBUG_LEVEL          | no       | `TRACE`                      | a debug level used for logging activity, defaults to `INFO`                                                                                                                                        |
-| BOT_CONTEXT_MSG      | no       | `15`                         | The number of previous messages which are appended to the conversation with ChatGPT, defaults to 100                                                                                               |
-| BOT_INSTRUCTION      | no       | `Act like Elon Musk`         | Extra instruction to give your assistance. How should the assistant behave? |
+**see:** `config-sample.yaml` and `.env-sample` 
+
+### Example `config.yaml`
+```yaml
+# System default settings
+MATTERMOST_URL: 'https://your-mattermost-url.example.com'
+BOT_CONTEXT_MSG: 100
+PLUGINS: image-plugin
+OPENAI_MAX_TOKENS: 2000
+OPENAI_TEMPERATURE: 1
+MAX_PROMPT_TOKENS: 2000
+
+bots:
+  - name: '@OpenAI'
+    mattermostUrl: 'https://your-mattermost-url.example.com'
+    mattermostToken: 'your-mattermost-token'
+    type: 'openai'
+    apiKey: 'your-openai-api-key'
+    apiBase: 'https://api.openai.com/v1'
+    modelName: 'gpt-4o-mini'
+    visionModelName: 'gpt-4v'
+    imageModelName: 'dall-e-3'
+    maxTokens: 16384
+    temperature: 1
+    maxPromptTokens: 123904
+    plugins: 'image-plugin'
+  - name: '@ChatGPT'
+    mattermostUrl: 'https://your-mattermost-url.example.com'
+    mattermostToken: 'your-mattermost-token'
+    type: 'azure'
+    apiKey: 'your-azure-openai-api-key'
+    apiVersion: '2024-10-21'
+    instanceName: 'your-azure-instance-name'
+    deploymentName: 'gpt-4o-mini'
+    visionKey: 'your-azure-openai-vision-key'
+    visionInstanceName: 'your-azure-vision-instance-name'
+    visionDeploymentName: 'gpt-4-vision-preview'
+    imageKey: 'your-azure-openai-image-key'
+    imageInstanceName: 'your-azure-image-instance-name'
+    imageDeploymentName: 'dall-e-3'
+    maxTokens: 16384
+    temperature: 1
+    maxPromptTokens: 123904
+    plugins: 'image-plugin'
+  - name: '@Gemini'
+    mattermostUrl: 'https://your-mattermost-url.example.com'
+    mattermostToken: 'your-mattermost-token'
+    type: 'google'
+    apiKey: 'your-google-api-key'
+    imageModelName: 'dall-e-3'
+    maxTokens: 8192
+    temperature: 1
+    maxPromptTokens: 1048576
+    plugins: ''
+  - name: '@Cohere'
+    mattermostUrl: 'https://your-mattermost-url.example.com'
+    mattermostToken: 'your-mattermost-token'
+    type: 'cohere'
+    apiKey: 'your-cohere-api-key'
+    imageModelName: 'dall-e-3'
+    maxTokens: 4000
+    temperature: 1
+    maxPromptTokens: 123904
+    plugins: ''
+  - name: '@Anthropic'
+    mattermostUrl: 'https://your-mattermost-url.example.com'
+    mattermostToken: 'your-mattermost-token'
+    type: 'anthropic'
+    apiKey: 'your-anthropic-api-key'
+    imageModelName: 'dall-e-3'
+    maxTokens: 4096
+    temperature: 1
+    maxPromptTokens: 123904
+    plugins: ''
+
+# Bot instructions
+BOT_INSTRUCTION: "You are a helpful assistant. Whenever users asks you for help you will provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the meta data of the messages."
+```
+
+### Configuration Options
+
+| Name                 | Required | Default Value               | Description                                                                                                           |
+|----------------------|----------|-----------------------------|-----------------------------------------------------------------------------------------------------------------------|
+| MATTERMOST_URL       | yes      | none                        | The URL to the Mattermost server. This is default for all bots.                                                       |
+| BOT_CONTEXT_MSG      | no       | 100                         | The number of previous messages which are appended to the conversation with ChatGPT.                                  |
+| PLUGINS              | no       | 'image-plugin graph-plugin' | The enabled plugins of the bot. This is default for all bots. By default, all plugins (graph-plugin and image-plugin) are enabled. |
+| OPENAI_MAX_TOKENS    | no       | 2000                        | The maximum number of tokens to pass to the LLM's API. This is default for all bots.                                  |
+| OPENAI_TEMPERATURE   | no       | 1                           | The sampling temperature to use, between 0 and 2. Higher values make the output more random, while lower values make it more focused and deterministic. This is default for all bots. |
+| MAX_PROMPT_TOKENS    | no       | 2000                        | Maximum number of prompt tokens. This is default for all bots.                                                        |
+| BOT_INSTRUCTION      | no       | 'You are a helpful assistant...` | Extra instruction to give your assistance. How should the assistant behave? This setting used by all bots.       |
+|
+| name                 | yes      | none                        | The name of the bot.                                                                                                  |
+| mattermostUrl        | no       | none                        | The URL to the Mattermost server for the bot.                                                                         |
+| mattermostToken      | yes      | none                        | The authentication token for the Mattermost bot.                                                                      |
+| type                 | yes      | none                        | The type of AI provider (e.g., openai, azure, google, cohere, anthropic).                                             |
+| apiKey               | yes      | none                        | The API key for the AI provider.                                                                                      |
+| apiBase              | no       | none                        | The base URL for the AI provider's API.                                                                               |
+| modelName            | no       | 'gpt-4o-mini'               | The name of the model to use for chat completions.                                                                    |
+| visionModelName      | no       | none                        | The name of the model to use for vision tasks.                                                                        |
+| imageModelName       | no       | none                        | The name of the model to use for image generation.                                                                    |
+| apiVersion           | no       | '2024-10-21'                | The API version to use for the AI provider.                                                                           |
+| instanceName         | no       | none                        | The instance name for the AI provider (specific to Azure).                                                            |
+| deploymentName       | no       | none                        | The deployment name for the AI provider (specific to Azure).                                                          |
+| visionKey            | no       | none                        | The API key for the vision tasks (specific to Azure).                                                                 |
+| visionInstanceName   | no       | none                        | The instance name for the vision tasks (specific to Azure).                                                           |
+| visionDeploymentName | no       | none                        | The deployment name for the vision tasks (specific to Azure).                                                         |
+| imageKey             | no       | none                        | The API key for the image generation tasks (specific to Azure).                                                       |
+| imageInstanceName    | no       | none                        | The instance name for the image generation tasks (specific to Azure).                                                 |
+| imageDeploymentName  | no       | none                        | The deployment name for the image generation tasks (specific to Azure).                                               |
+| maxTokens            | no       | 2000                        | The maximum number of tokens for the AI provider.                                                                     |
+| temperature          | no       | 1                           | The sampling temperature for the AI provider.                                                                         |
+| maxPromptTokens      | no       | 2000                        | The maximum number of prompt tokens for the AI provider.                                                              |
+| plugins              | no       | 'image-plugin graph-plugin' | The enabled plugins for the bot.                                                                                      |
 
 > **Note**
 > The `YFILES_SERVER_URL` is used for automatically converting text information created by the bot into diagrams.
@@ -84,20 +176,7 @@ Use the prebuilt image from [`gitlab.on-o.com/docker/chatgpt-mattermost-bot/rele
 
 ```bash
 docker run -d --restart unless-stopped \
-  -e MATTERMOST_URL=https://mattermost.server \
-  -e MATTERMOST_TOKEN=abababacdcdcd \
-  -e OPENAI_API_KEY=234234234234234234 \
-  --name chatbot \
-  gitlab.on-o.com/docker/chatgpt-mattermost-bot/release:latest
-```
-
-As Azure OpenAI Service case
-```bash
-docker run -d --restart unless-stopped \
-  -e MATTERMOST_URL=https://mattermost.server \
-  -e MATTERMOST_TOKEN=abababacdcdcd \
-  -e AZURE_OPENAI_API_KEY=234234234234234234 \
-  -e AZURE_OPENAI_API_INSTANCE_NAME=example-name \
+  -v /path/to/config.yaml:/app/config.yaml \
   --name chatbot \
   gitlab.on-o.com/docker/chatgpt-mattermost-bot/release:latest
 ```
@@ -122,9 +201,7 @@ docker build . -t chatgpt-mattermost-bot
 Create and run a container from the image
 ```bash
 docker run -d --restart unless-stopped \
-  -e MATTERMOST_URL=https://mattermost.server \
-  -e MATTERMOST_TOKEN=abababacdcdcd \
-  -e OPENAI_API_KEY=234234234234234234 \
+  -v /path/to/config.yaml:/app/config.yaml \
   --name chatbot \
   chatgpt-mattermost-bot
 ```
@@ -139,9 +216,7 @@ can mount that file into the container at a fixed position and specify the [node
 docker run -d --restart unless-stopped \
   -v /absolutepath/to/certfile.crt:/certs/certfile.crt \
   -e NODE_EXTRA_CA_CERTS=/certs/certfile.crt \
-  -e MATTERMOST_URL=https://mattermost.server \
-  -e MATTERMOST_TOKEN=abababacdcdcd \
-  -e OPENAI_API_KEY=234234234234234234 \
+  -v /path/to/config.yaml:/app/config.yaml \
   --name chatbot \
   chatgpt-mattermost-bot
 ```
@@ -160,18 +235,12 @@ docker stop chatbot
 If you want to run docker compose (maybe even merge it with your mattermost docker stack), you can use this
 as a starting point: First adjust the environment variables in `.env` copy from `.env-sample`.
 
-### Required Environment Variables
-```sh
-MATTERMOST_URL=https://mattermost.server
-MATTERMOST_TOKEN=abababacdcdcd
-OPENAI_API_KEY=sk-234234234234234234
-```
+### Required Environment Variables and Configuration
+
+No environment variables need to be set, but you must provide a `config.yaml` file.
 
 ### Optional Environment Variables
 ```sh
-# Set this if using a custom username for the bot, default = @chatgpt
-MATTERMOST_BOTNAME="@chatgpt"
-
 # Console logging output level, default = INFO
 DEBUG_LEVEL=TRACE
 

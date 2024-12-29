@@ -21,3 +21,38 @@ export type AiResponse = {
   intermediate?: boolean
   model?: string
 }
+
+export type ProviderConfig = {
+  name: string
+  mattermostUrl: string
+  mattermostToken: string
+  type: string
+  apiKey: string
+  apiBase: string
+  modelName: string
+  visionModelName: string
+  imageModelName: string
+  apiVersion: string
+  instanceName: string
+  deploymentName: string
+  visionKey: string
+  visionInstanceName: string
+  visionDeploymentName: string
+  imageKey: string
+  imageInstanceName: string
+  imageDeploymentName: string
+  maxTokens: number
+  temperature: number
+  maxPromptTokens: number
+  plugins: string
+}
+
+export type AIProviders = {
+  chatProvider: AIProvider
+  imageProvider: AIProvider
+  visionProvider: AIProvider
+  type: string
+  modelName: string
+  imageModelName: string
+  visionModelName: string
+}

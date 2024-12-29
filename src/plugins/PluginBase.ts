@@ -1,4 +1,5 @@
 import { AiResponse, MattermostMessageData } from '../types.js'
+import { OpenAIWrapper } from 'src/OpenAIWrapper.js'
 import { botLog } from '../logging.js'
 
 type PluginArgument = {
@@ -21,10 +22,15 @@ export abstract class PluginBase<T> {
   readonly pluginArguments: Record<string, PluginArgument> = {}
   readonly requiredArguments: string[] = []
 
-  abstract runPlugin(args: T, msgData: MattermostMessageData): Promise<AiResponse>
-  setup(): boolean {
+  abstract runPlugin(args: T, msgData: MattermostMessageData, openAIWrapper?: OpenAIWrapper): Promise<AiResponse>
+  setup(_plugins: string): boolean {
     return true
   }
+  protected isEnable(plugins: string, pluginName: string): boolean {
+    if (!plugins || plugins.indexOf(pluginName) === -1) return false
+    return true
+  }
+
   protected addPluginArgument(name: string, type: string, description: string, optional = false) {
     this.pluginArguments[name] = { type, description }
     if (!optional) {

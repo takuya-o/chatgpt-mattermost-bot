@@ -5,6 +5,8 @@ docker-compose.override.yml
 
 !.env-sample
 .env*
+!config-sample.yaml
+config*.yaml
 # envFileを使えは問題なし /.vscode/launch.json
 /out/
 
@@ -124,3 +126,4 @@ $RECYCLE.BIN/
 *.lnk
 
 # End of https://www.toptal.com/developers/gitignore/api/emacs,MacOS,Windows
+

@@ -1,0 +1,72 @@
+# System default settings
+MATTERMOST_URL: 'https://your-mattermost-url.example.com'
+BOT_CONTEXT_MSG: 100
+PLUGINS: image-plugin
+OPENAI_MAX_TOKENS: 2000
+OPENAI_TEMPERATURE: 1
+MAX_PROMPT_TOKENS: 2000
+
+bots:
+  - name: '@OpenAI'
+    mattermostUrl: 'https://your-mattermost-url.example.com'
+    mattermostToken: 'your-mattermost-token'
+    type: 'openai'
+    apiKey: 'your-openai-api-key'
+    apiBase: 'https://api.openai.com/v1'
+    modelName: 'gpt-4o-mini'
+    visionModelName: 'gpt-4-vision-preview'
+    imageModelName: 'dall-e-3'
+    maxTokens: 16384
+    temperature: 1
+    maxPromptTokens: 123904
+    plugins: 'image-plugin'
+  - name: '@ChatGPT'
+    mattermostUrl: 'https://your-mattermost-url.example.com'
+    mattermostToken: 'your-mattermost-token'
+    type: 'azure'
+    apiKey: 'your-azure-openai-api-key'
+    apiVersion: '2024-10-21'
+    instanceName: 'your-azure-instance-name'
+    deploymentName: 'gpt-4o-mini'
+    visionKey: 'your-azure-openai-vision-key'
+    visionInstanceName: 'your-azure-vision-instance-name'
+    visionDeploymentName: 'gpt-4v'
+    imageKey: 'your-azure-openai-image-key'
+    imageInstanceName: 'your-azure-image-instance-name'
+    imageDeploymentName: 'dall-e-3'
+    maxTokens: 16384
+    temperature: 1
+    maxPromptTokens: 123904
+    plugins: 'image-plugin'
+  - name: '@Gemini'
+    mattermostUrl: 'https://your-mattermost-url.example.com'
+    mattermostToken: 'your-mattermost-token'
+    type: 'google'
+    apiKey: 'your-google-api-key'
+    imageModelName: 'dall-e-3'
+    maxTokens: 8192
+    temperature: 1
+    maxPromptTokens: 1048576
+    plugins: ''
+  - name: '@Cohere'
+    mattermostUrl: 'https://your-mattermost-url.example.com'
+    mattermostToken: 'your-mattermost-token'
+    type: 'cohere'
+    apiKey: 'your-cohere-api-key'
+    imageModelName: 'dall-e-3'
+    maxTokens: 4000
+    temperature: 1
+    maxPromptTokens: 123904
+    plugins: ''
+  - name: '@Anthropic'
+    mattermostUrl: 'https://your-mattermost-url.example.com'
+    mattermostToken: 'your-mattermost-token'
+    type: 'anthropic'
+    apiKey: 'your-anthropic-api-key'
+    imageModelName: 'dall-e-3'
+    maxTokens: 4096
+    temperature: 1
+    maxPromptTokens: 123904
+    plugins: ''
+# Bot instructions
+BOT_INSTRUCTION: "You are a helpful assistant. Whenever users asks you for help you will provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the meta data of the messages."

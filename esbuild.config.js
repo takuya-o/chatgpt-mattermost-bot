@@ -1,17 +1,17 @@
-// npx esbuild src/botservice.ts --bundle --outfile=out.js --platform=node --format=esm --packages=external
+// npx esbuild src/BotService.ts --bundle --outfile=out.js --platform=node --format=esm --packages=external
 
 import { build } from 'esbuild';
 import fs from 'fs';
 
 await build({
-  entryPoints: ['./src/botservice.js'],
+  entryPoints: ['./src/MultiInstance.js'],
   bundle: true,
   minify: false,
   sourcemap: false,
   platform: 'node',
   format: 'esm',
   packages: 'external',
-  outfile: './dist/botservice.mjs'
+  outfile: './dist/MultiInstance.mjs'
 });
 
 const wasmFile = fs.readFileSync(

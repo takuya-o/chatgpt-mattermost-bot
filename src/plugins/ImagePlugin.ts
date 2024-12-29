@@ -1,8 +1,8 @@
 import { AiResponse, MattermostMessageData } from '../types.js'
-import { createChatCompletion, createImage } from '../openai-wrapper.js'
+import { Client4 } from '@mattermost/client'
 import FormData from 'form-data'
+import { OpenAIWrapper } from '../OpenAIWrapper.js'
 import { PluginBase } from './PluginBase.js'
-import { mmClient } from '../mm-client.js'
 
 type ImagePluginArgs = {
   imageDescription: string
@@ -19,27 +19,34 @@ export class ImagePlugin extends PluginBase<ImagePluginArgs> {
     "'street-art', 'drawing', or similar words. Keep the prompt as simple as possible and never get longer than " +
     '400 characters. You may only answer with the resulting prompt and provide no description or explanations.'
 
-  setup(): boolean {
+  setup(plugins: string): boolean {
     this.addPluginArgument('imageDescription', 'string', 'The description of the image provided by the user')
 
-    const plugins = process.env['PLUGINS']
-    if (!plugins || plugins.indexOf('image-plugin') === -1) return false
+    if (!this.isEnable(plugins, 'image-plugin')) return false
 
-    return super.setup()
+    return super.setup(plugins)
   }
 
-  async runPlugin(args: ImagePluginArgs, msgData: MattermostMessageData): Promise<AiResponse> {
+  async runPlugin(
+    args: ImagePluginArgs,
+    msgData: MattermostMessageData,
+    openAIWrapper: OpenAIWrapper,
+  ): Promise<AiResponse> {
     const aiResponse: AiResponse = {
       message: 'Sorry, I could not execute the image plugin.',
     }
 
     try {
-      const imagePrompt = await this.createImagePrompt(args.imageDescription)
+      const imagePrompt = await this.createImagePrompt(args.imageDescription, openAIWrapper)
       if (imagePrompt) {
         this.log.trace({ imageInputPrompt: args.imageDescription, imageOutputPrompt: imagePrompt })
-        const base64Image = /*this.img256 //*/ /*this.sampleB64String */ await createImage(imagePrompt)
+        const base64Image = /*this.img256 //*/ /*this.sampleB64String */ await openAIWrapper.createImage(imagePrompt)
         if (base64Image) {
-          const fileId = await this.base64ToFile(base64Image, msgData.post.channel_id)
+          const fileId = await this.base64ToFile(
+            base64Image,
+            msgData.post.channel_id,
+            openAIWrapper.getMattemostClient().getClient(),
+          )
           aiResponse.message = 'Here is the image you requested: ' + imagePrompt
           aiResponse.props = {
             originalMessage: 'Sure here is the image you requested. <IMAGE>' + imagePrompt + '</IMAGE>',
@@ -56,7 +63,7 @@ export class ImagePlugin extends PluginBase<ImagePluginArgs> {
     return aiResponse
   }
 
-  async createImagePrompt(userInput: string): Promise<string | null | undefined> {
+  async createImagePrompt(userInput: string, openAIWrapper: OpenAIWrapper): Promise<string | null | undefined> {
     const messages = [
       {
         role: 'system' as const, //ChatCompletionRequestMessageRoleEnum.System,
@@ -68,11 +75,11 @@ export class ImagePlugin extends PluginBase<ImagePluginArgs> {
       },
     ]
 
-    const response = await createChatCompletion(messages) //TODO トークン数の記録
+    const response = await openAIWrapper.createChatCompletion(messages, undefined) //TODO トークン数の記録
     return response?.responseMessage?.content
   }
 
-  async base64ToFile(b64String: string, channelId: string) {
+  async base64ToFile(b64String: string, channelId: string, mattermostClient: Client4) {
     const form = new FormData()
     form.append('channel_id', channelId)
     // const bin = atob(b64String)
@@ -82,7 +89,7 @@ export class ImagePlugin extends PluginBase<ImagePluginArgs> {
     // }
     // form.append('files', new Blob([buffer], { type: 'image/png' }), 'image.png')
     form.append('files', Buffer.from(b64String, 'base64'), 'image.png')
-    const response = await mmClient.uploadFile(form)
+    const response = await mattermostClient.uploadFile(form)
     this.log.trace('Uploaded a file with id', response.file_infos[0].id)
     return response.file_infos[0].id
   }
