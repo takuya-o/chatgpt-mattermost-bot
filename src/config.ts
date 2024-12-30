@@ -4,6 +4,11 @@ import yaml from 'js-yaml'
 
 export function getConfig() {
   const configFileName = process.env.CONFIG_FILE || './config.yaml'
+  // ファイルが存在するか確認し、存在しない場合は空のRecordを返す
+  if (!fs.existsSync(configFileName)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return {} as Record<string, any>
+  }
   const fileContents = fs.readFileSync(configFileName, 'utf8')
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const data = yaml.load(fileContents) as Record<string, any>

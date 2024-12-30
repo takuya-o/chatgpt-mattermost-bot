@@ -28,10 +28,11 @@ if (!global.FormData) {
 }
 
 const config = getConfig()
-const contextMsgCount = Number(config.BOT_CONTEXT_MSG ?? 100)
+const contextMsgCount = Number(config.BOT_CONTEXT_MSG ?? process.env['BOT_CONTEXT_MSG'] ?? 100)
 export const SYSTEM_MESSAGE_HEADER = '// BOT System Message: '
 const additionalBotInstructions =
-  config.BOT_INSTRUCTION ||
+  config.BOT_INSTRUCTION ??
+  process.env['BOT_INSTRUCTION'] ??
   'You are a helpful assistant. Whenever users asks you for help you will ' +
     "provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the " +
     'meta data of the messages.'

@@ -288,6 +288,9 @@ import fs from "fs";
 import yaml from "js-yaml";
 function getConfig() {
   const configFileName = process.env.CONFIG_FILE || "./config.yaml";
+  if (!fs.existsSync(configFileName)) {
+    return {};
+  }
   const fileContents = fs.readFileSync(configFileName, "utf8");
   const data = yaml.load(fileContents);
   return data;
@@ -534,9 +537,9 @@ if (!global.FormData) {
   global.FormData = FormData3;
 }
 var config = getConfig();
-var contextMsgCount = Number(config.BOT_CONTEXT_MSG ?? 100);
+var contextMsgCount = Number(config.BOT_CONTEXT_MSG ?? process.env["BOT_CONTEXT_MSG"] ?? 100);
 var SYSTEM_MESSAGE_HEADER = "// BOT System Message: ";
-var additionalBotInstructions = config.BOT_INSTRUCTION || "You are a helpful assistant. Whenever users asks you for help you will provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the meta data of the messages.";
+var additionalBotInstructions = config.BOT_INSTRUCTION ?? process.env["BOT_INSTRUCTION"] ?? "You are a helpful assistant. Whenever users asks you for help you will provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the meta data of the messages.";
 var BotService2 = class {
   mattermostClient;
   meId;
@@ -1577,47 +1580,76 @@ var OpenAIWrapper = class {
   getMattemostClient() {
     return this.mattermostCLient;
   }
+  /**
+   * 環境変数に基づいてOpenAIモデル名を取得します。
+   *
+   * @param defaultModelName - デフォルトのモデル名。
+   * @returns 環境変数 `OPENAI_API_KEY` が設定されている場合は  `defaultModelName`  を返し、
+   *          そうでない場合は環境変数 `OPENAI_MODEL_NAME` を返します。
+   */
+  getOpenAIModelName(defaultModelName) {
+    return (process.env["OPENAI_API_KEY"] ? void 0 : process.env["OPENAI_MODEL_NAME"]) && defaultModelName;
+  }
   // eslint-disable-next-line max-lines-per-function
   constructor(providerConfig, mattermostClient) {
     this.mattermostCLient = mattermostClient;
     const yamlConfig = getConfig();
-    this.MAX_TOKENS = providerConfig.maxTokens ?? Number(yamlConfig.OPENAI_MAX_TOKENS ?? 2e3);
-    this.TEMPERATURE = providerConfig.temperature ?? Number(yamlConfig.OPENAI_TEMPERATURE ?? 1);
-    this.MAX_PROMPT_TOKENS = providerConfig.maxPromptTokens ?? Number(yamlConfig.MAX_PROMPT_TOKENS ?? 2e3);
-    if (!providerConfig.apiKey || !providerConfig.name) {
-      openAILog.error("No apiKey or name. Ignore provider config", providerConfig);
-      throw new Error("No apiKey or name. Ignore provider config");
-    }
+    this.MAX_TOKENS = providerConfig.maxTokens ?? Number(yamlConfig.OPENAI_MAX_TOKENS ?? process.env["OPENAI_MAX_TOKENS"] ?? 2e3);
+    this.TEMPERATURE = providerConfig.temperature ?? Number(yamlConfig.OPENAI_TEMPERATURE ?? process.env["OPENAI_TEMPERATURE"] ?? 1);
+    this.MAX_PROMPT_TOKENS = providerConfig.maxPromptTokens ?? Number(yamlConfig.MAX_PROMPT_TOKENS ?? process.env["MAX_PROMPT_TOKENS"] ?? 2e3);
     this.name = providerConfig.name;
+    if (!this.name) {
+      openAILog.error("No name. Ignore provider config", providerConfig);
+      throw new Error("No Ignore provider config");
+    }
     let chatProvider;
     let imageProvider = void 0;
     let visionProvider = void 0;
     switch (providerConfig.type) {
-      case "azure":
+      case "azure": {
+        const apiVersion = providerConfig.apiVersion ?? process.env["AZURE_OPENAI_API_VERSION"] ?? "2024-10-21";
+        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "AZURE_OPENAI_API_KEY");
+        const instanceName = providerConfig.instanceName ?? process.env["AZURE_OPENAI_API_INSTANCE_NAME"];
+        if (!instanceName) {
+          openAILog.error(`${this.name} No Azure instanceName. Ignore provider config`, providerConfig);
+          throw new Error(`${this.name} No Azure instanceName. Ignore provider config`);
+        }
+        const deploymentName = providerConfig.deploymentName ?? process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"];
+        if (!deploymentName) {
+          openAILog.error(`${this.name} No Azure deploymentName. Ignore provider config`, providerConfig);
+          throw new Error(`${this.name} No Azure deploymentName. Ignore provider config`);
+        }
         chatProvider = new OpenAIAdapter({
-          apiKey: providerConfig.apiKey,
-          baseURL: `https://${providerConfig.instanceName}.openai.azure.com/openai/deployments/${providerConfig.deploymentName}`,
-          defaultQuery: { "api-version": providerConfig.apiVersion },
-          defaultHeaders: { "api-key": providerConfig.apiKey }
+          apiKey,
+          baseURL: `https://${instanceName}.openai.azure.com/openai/deployments/${deploymentName}`,
+          defaultQuery: { "api-version": apiVersion },
+          defaultHeaders: { "api-key": apiKey }
         });
-        if (providerConfig.imageKey && providerConfig.imageDeploymentName) {
+        const imageKey = providerConfig.imageKey ?? process.env["AZURE_OPENAI_API_IMAGE_KEY"];
+        const imageInstanceName = providerConfig.imageInstanceName ?? process.env["AZURE_OPENAI_API_IMAGE_INSTANCE_NAME"] ?? instanceName;
+        const imageDeploymentName = providerConfig.imageDeploymentName ?? process.env["AZURE_OPENAI_API_IMAGE_DEPLOYMENT_NAME"];
+        if (imageKey && imageDeploymentName) {
           imageProvider = new OpenAIAdapter({
             // Azureは東海岸(dall-e-2)やスエーデン(dall-e-3)しかDALL-Eが無いので新規に作る
-            apiKey: providerConfig.imageKey,
-            baseURL: `https://${providerConfig.imageInstanceName ?? providerConfig.instanceName}.openai.azure.com/openai/deployments/${providerConfig.imageDeploymentName}`,
-            defaultQuery: { "api-version": providerConfig.apiVersion ?? "2024-10-21" },
-            defaultHeaders: { "api-key": providerConfig.imageKey }
+            apiKey: imageKey,
+            baseURL: `https://${imageInstanceName}.openai.azure.com/openai/deployments/${imageDeploymentName}`,
+            defaultQuery: { "api-version": apiVersion },
+            defaultHeaders: { "api-key": imageKey }
           });
         }
-        if (providerConfig.visionKey && providerConfig.visionDeploymentName) {
+        const visionKey = providerConfig.visionKey ?? process.env["AZURE_OPENAI_API_VISION_KEY"];
+        const visionInstanceName = providerConfig.visionInstanceName ?? process.env["AZURE_OPENAI_API_VISION_INSTANCE_NAME"] ?? instanceName;
+        const visionDeploymentName = providerConfig.visionDeploymentName ?? process.env["AZURE_OPENAI_API_VISION_DEPLOYMENT_NAME"] ?? deploymentName;
+        if (visionKey && visionDeploymentName) {
           visionProvider = new OpenAIAdapter({
-            apiKey: providerConfig.visionKey,
-            baseURL: `https://${providerConfig.visionInstanceName ?? providerConfig.instanceName}.openai.azure.com/openai/deployments/${providerConfig.visionDeploymentName}`,
-            defaultQuery: { "api-version": providerConfig.apiVersion ?? "2024-10-21" },
-            defaultHeaders: { "api-key": providerConfig.visionKey }
+            apiKey: visionKey,
+            baseURL: `https://${visionInstanceName}.openai.azure.com/openai/deployments/${visionDeploymentName}`,
+            defaultQuery: { "api-version": apiVersion },
+            defaultHeaders: { "api-key": visionKey }
           });
         }
-        ;
+        providerConfig.visionInstanceName = visionInstanceName;
+        providerConfig.visionDeploymentName = visionDeploymentName;
         ({ imageProvider, visionProvider } = this.setImageAndVisionProvider(
           providerConfig,
           imageProvider,
@@ -1628,13 +1660,15 @@ var OpenAIWrapper = class {
           imageProvider,
           visionProvider,
           type: providerConfig.type,
-          modelName: providerConfig.modelName ?? "gpt-4o-mini",
-          imageModelName: providerConfig.imageModelName,
-          visionModelName: providerConfig.visionModelName
+          modelName: providerConfig.modelName ?? deploymentName ?? "gpt-4o-mini",
+          imageModelName: providerConfig.imageModelName ?? imageDeploymentName ?? "dall-e-3",
+          visionModelName: providerConfig.visionModelName ?? visionDeploymentName ?? "gpt-4v"
         };
         break;
-      case "anthropic":
-        chatProvider = new AnthropicAdapter({ apiKey: providerConfig.apiKey });
+      }
+      case "anthropic": {
+        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "ANTHROPIC_API_KEY");
+        chatProvider = new AnthropicAdapter({ apiKey });
         ({ imageProvider, visionProvider } = this.setImageAndVisionProvider(
           providerConfig,
           imageProvider,
@@ -1645,13 +1679,15 @@ var OpenAIWrapper = class {
           imageProvider,
           visionProvider,
           type: providerConfig.type,
-          modelName: providerConfig.modelName ?? "claude-3-opus-20240229",
+          modelName: providerConfig.modelName ?? this.getOpenAIModelName("claude-3-opus-20240229"),
           imageModelName: providerConfig.imageModelName,
           visionModelName: providerConfig.visionModelName
         };
         break;
-      case "cohere":
-        chatProvider = new CohereAdapter({ apiKey: providerConfig.apiKey });
+      }
+      case "cohere": {
+        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "COHERE_API_KEY");
+        chatProvider = new CohereAdapter({ apiKey });
         ({ imageProvider, visionProvider } = this.setImageAndVisionProvider(
           providerConfig,
           imageProvider,
@@ -1662,18 +1698,16 @@ var OpenAIWrapper = class {
           imageProvider,
           visionProvider,
           type: providerConfig.type,
-          modelName: providerConfig.modelName ?? "command-r-plus",
+          modelName: providerConfig.modelName ?? this.getOpenAIModelName("command-r-plus"),
           imageModelName: providerConfig.imageModelName,
           visionModelName: providerConfig.visionModelName
         };
         break;
-      case "google":
-        chatProvider = new GoogleGeminiAdapter(
-          providerConfig.apiKey,
-          providerConfig.modelName,
-          this.MAX_TOKENS,
-          this.TEMPERATURE
-        );
+      }
+      case "google": {
+        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "GOOGLE_API_KEY");
+        const modelName = providerConfig.modelName ?? this.getOpenAIModelName("gemini-1.5-flash");
+        chatProvider = new GoogleGeminiAdapter(apiKey, modelName, this.MAX_TOKENS, this.TEMPERATURE);
         if (!imageProvider) {
           imageProvider = chatProvider;
         }
@@ -1683,15 +1717,17 @@ var OpenAIWrapper = class {
           imageProvider,
           visionProvider,
           type: providerConfig.type,
-          modelName: providerConfig.modelName ?? "gemini-1.5-flash",
+          modelName,
           imageModelName: providerConfig.imageModelName,
           visionModelName: providerConfig.visionModelName
         };
         break;
-      case "openai":
+      }
+      case "openai": {
+        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "OPENAI_API_KEY");
         chatProvider = new OpenAIAdapter({
-          apiKey: providerConfig.apiKey,
-          baseURL: providerConfig.apiBase
+          apiKey,
+          baseURL: providerConfig.apiBase ?? process.env["OPENAI_API_BASE"]
         });
         if (providerConfig.imageModelName) {
           imageProvider = chatProvider;
@@ -1704,16 +1740,25 @@ var OpenAIWrapper = class {
           imageProvider,
           visionProvider,
           type: providerConfig.type,
-          modelName: providerConfig.modelName ?? "gpt-4o-mini",
-          imageModelName: providerConfig.imageModelName,
-          visionModelName: providerConfig.visionModelName
+          modelName: providerConfig.modelName ?? process.env["OPENAI_MODEL_NAME"] ?? "gpt-4o-mini",
+          imageModelName: providerConfig.imageModelName ?? process.env["OPENAI_IMAGE_MODEL_NAME"] ?? "dall-e-3",
+          visionModelName: providerConfig.visionModelName ?? process.env["OPENAI_VISION_MODEL_NAME"] ?? "gpt-4v"
         };
         break;
+      }
       default:
-        openAILog.error('Unknown LLM provider type. "`${providerConfig.type}`"', providerConfig);
-        throw new Error('Unknown LLM provider type. "`${providerConfig.type}`"');
+        openAILog.error(`${this.name} Unknown LLM provider type. ${providerConfig.type}`, providerConfig);
+        throw new Error(`${this.name} Unknown LLM provider type. ${providerConfig.type}`);
     }
-    openAILog.debug(`AIProvider: ${providerConfig.name}`, this.provider);
+    openAILog.debug(`AIProvider: ${providerConfig.name}`, this.provider.type, this.provider.modelName);
+  }
+  compensateAPIKey(apiKey, envName) {
+    apiKey = apiKey ?? process.env[envName];
+    if (!apiKey) {
+      openAILog.error(`${this.name} No apiKey. Ignore provider config`);
+      throw new Error(`${this.name} No apiKey. Ignore provider config`);
+    }
+    return apiKey;
   }
   setImageAndVisionProvider(providerConfig, imageProvider, visionProvider) {
     if (!providerConfig.imageModelName && !providerConfig.imageDeploymentName && imageProvider) {
@@ -2006,39 +2051,63 @@ var OpenAIWrapper = class {
 var botServices = {};
 async function main() {
   const config2 = getConfig();
+  if (!config2.bots) {
+    config2.bots = [{}];
+  }
   config2.bots.forEach(async (botConfig) => {
-    if (!botConfig.name) {
-      botLog.error("No  name. Ignore provider config", botConfig);
+    const name = botConfig.name ?? process.env["MATTERMOST_BOTNAME"];
+    if (botServices[name]) {
+      botLog.error(`Duplicate bot name detected: ${name}. Ignoring this bot configuration.`, botConfig);
       return;
     }
-    botLog.log(`${botConfig.name} Connected to Mattermost.`);
+    if (!name) {
+      botLog.error("No name. Ignore provider config", botConfig);
+      return;
+    }
+    botConfig.name = name;
+    if (!botConfig.type) {
+      if (process.env["AZURE_OPENAI_API_KEY"] || botConfig.apiVersion || botConfig.instanceName || botConfig.deploymentName) {
+        botConfig.type = "azure";
+      } else if (process.env["OPENAI_API_KEY"]) {
+        botConfig.type = "openai";
+      } else if (process.env["GOOGLE_API_KEY"]) {
+        botConfig.type = "google";
+      } else if (process.env["COHERE_API_KEY"]) {
+        botConfig.type = "cohere";
+      } else if (process.env["ANTHROPIC_API_KEY"]) {
+        botConfig.type = "anthropic";
+      } else {
+        botLog.error(`${name} No type. Ignore provider config`, botConfig);
+        return;
+      }
+      botLog.warn(`${name} No type. Guessing type as ${botConfig.type}.`, botConfig);
+    }
+    botLog.log(`${name} Connected to Mattermost.`);
+    const mattermostToken = botConfig.mattermostToken ?? process.env[`${botConfig.type.toUpperCase()}_MATTERMOST_TOKEN`] ?? process.env["MATTERMOST_TOKEN"];
     const mattermostClient = new MattermostClient(
-      botConfig.mattermostUrl ?? config2.MATTERMOST_URL,
-      botConfig.mattermostToken
+      botConfig.mattermostUrl ?? config2.MATTERMOST_URL ?? process.env["MATTERMOST_URL"],
+      mattermostToken
     );
-    if (!botConfig.apiKey) {
-      botLog.error("No apiKey. Ignore provider config", botConfig);
-      return;
-    }
+    botLog.log(`${name} Start LLM wrapper.`);
     let openAIWrapper;
     try {
       openAIWrapper = new OpenAIWrapper(botConfig, mattermostClient);
     } catch (e) {
-      botLog.error(`${botConfig.name} Failed to create OpenAIWrapper. Ignore it.`, e);
+      botLog.error(`${name} Failed to create OpenAIWrapper. Ignore it.`, e);
       return;
     }
-    botLog.log(`${botConfig.name} Start BotService.`);
+    botLog.log(`${name} Start BotService.`);
     const meId = (await mattermostClient.getClient().getMe()).id;
     const botService = new BotService2(
       mattermostClient,
       meId,
-      botConfig.name,
+      name,
       openAIWrapper,
-      botConfig.plugins ?? config2.PLUGINS
+      botConfig.plugins ?? config2.PLUGINS ?? process.env["PLUGINS"] ?? "image-plugin graph-plugin"
     );
     mattermostClient.getWsClient().addMessageListener((e) => botService.onClientMessage(e));
-    botLog.trace(`${botConfig.name} Listening to MM messages...`);
-    botServices[botConfig.name] = botService;
+    botLog.trace(`${name} Listening to MM messages...`);
+    botServices[name] = botService;
   });
 }
 main().catch((reason) => {
