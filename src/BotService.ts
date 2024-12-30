@@ -203,7 +203,7 @@ export class BotService {
    * @param height - 画像の高さ（任意）。
    * @returns Base64形式の画像データ。
    */
-  // 画像をBase64形式で取得する
+  // 画像をBase64形式で取得する //TODO: 関数も、画像の取得と変換を別の関数に分割することが考えられます。
   private async getBase64Image(
     url: string,
     token: string = '',

@@ -679,7 +679,7 @@ var BotService2 = class {
    * @param height - 画像の高さ（任意）。
    * @returns Base64形式の画像データ。
    */
-  // 画像をBase64形式で取得する
+  // 画像をBase64形式で取得する //TODO: 関数も、画像の取得と変換を別の関数に分割することが考えられます。
   async getBase64Image(url, token = "", format = "", width = 0, height = 0) {
     const init = {};
     if (token) {
@@ -2051,17 +2051,15 @@ var OpenAIWrapper = class {
 var botServices = {};
 async function main() {
   const config2 = getConfig();
-  if (!config2.bots) {
-    config2.bots = [{}];
-  }
+  config2.bots = config2.bots || [{}];
   config2.bots.forEach(async (botConfig) => {
     const name = botConfig.name ?? process.env["MATTERMOST_BOTNAME"];
     if (botServices[name]) {
-      botLog.error(`Duplicate bot name detected: ${name}. Ignoring this bot configuration.`, botConfig);
+      botLog.error(`Duplicate bot name detected: ${name}. Ignoring this bot configuration.`, hideTokens(botConfig));
       return;
     }
     if (!name) {
-      botLog.error("No name. Ignore provider config", botConfig);
+      botLog.error("No name. Ignore provider config", hideTokens(botConfig));
       return;
     }
     botConfig.name = name;
@@ -2077,13 +2075,13 @@ async function main() {
       } else if (process.env["ANTHROPIC_API_KEY"]) {
         botConfig.type = "anthropic";
       } else {
-        botLog.error(`${name} No type. Ignore provider config`, botConfig);
+        botLog.error(`${name} No type. Ignore provider config`, hideTokens(botConfig));
         return;
       }
-      botLog.warn(`${name} No type. Guessing type as ${botConfig.type}.`, botConfig);
+      botLog.warn(`${name} No type. Guessing type as ${botConfig.type}.`, hideTokens(botConfig));
     }
     botLog.log(`${name} Connected to Mattermost.`);
-    const mattermostToken = botConfig.mattermostToken ?? process.env[`${botConfig.type.toUpperCase()}_MATTERMOST_TOKEN`] ?? process.env["MATTERMOST_TOKEN"];
+    const mattermostToken = botConfig.mattermostToken ?? process.env[`${name.toUpperCase()}_MATTERMOST_TOKEN`] ?? process.env[`${botConfig.type.toUpperCase()}_MATTERMOST_TOKEN`] ?? process.env["MATTERMOST_TOKEN"];
     const mattermostClient = new MattermostClient(
       botConfig.mattermostUrl ?? config2.MATTERMOST_URL ?? process.env["MATTERMOST_URL"],
       mattermostToken
@@ -2109,6 +2107,20 @@ async function main() {
     botLog.trace(`${name} Listening to MM messages...`);
     botServices[name] = botService;
   });
+  function hideTokens(botConfig) {
+    if (botConfig.mattermostToken) {
+      botConfig.mattermostToken = "***";
+    }
+    if (botConfig.apiKey) {
+      botConfig.apiKey = "***";
+    }
+    if (botConfig.imageKey) {
+      botConfig.imageKey = "***";
+    }
+    if (botConfig.visionKey) {
+      botConfig.visionKey = "***";
+    }
+  }
 }
 main().catch((reason) => {
   botLog.error(reason);

@@ -79,7 +79,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       tools, // v1betaより
       //toolConfig?: ToolConfig;
     }
-    log.trace('request', JSON.parse(this.shortenLongString(JSON.stringify(request))))
+    log.trace('request', JSON.parse(this.shortenLongString(JSON.stringify(request)))) // JSON.parse()の例外のリスク
     const generateContentResponse = await this.generativeModel.generateContent(request)
     log.trace('generateContentResponse', generateContentResponse)
 

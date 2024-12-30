@@ -1,7 +1,7 @@
 > **Note** 👀
 > - Configuration methods have changed in version 3.
-> - There is no backward compatibility for configurations.
-> - You need to manually rewrite environment variables into `config.yaml`.
+> - The version 3.0.1 have backward compatibility for enviromnent variables configurations on single instance.
+> - Recommend manually rewrite environment variables into `config.yaml` for multi instance.
 
 ## Enhanced from the [original yGuy/chatgpt-mattermost-bot](https://github.com/yGuy/chatgpt-mattermost-bot)
 
@@ -131,38 +131,38 @@ BOT_INSTRUCTION: "You are a helpful assistant. Whenever users asks you for help 
 
 ### Configuration Options
 
-| Name                 | Required | Default Value               | Description                                                                                                           |
-|----------------------|----------|-----------------------------|-----------------------------------------------------------------------------------------------------------------------|
-| MATTERMOST_URL       | yes      | none                        | The URL to the Mattermost server. This is default for all bots.                                                       |
-| BOT_CONTEXT_MSG      | no       | 100                         | The number of previous messages which are appended to the conversation with ChatGPT.                                  |
-| PLUGINS              | no       | 'image-plugin graph-plugin' | The enabled plugins of the bot. This is default for all bots. By default, all plugins (graph-plugin and image-plugin) are enabled. |
-| OPENAI_MAX_TOKENS    | no       | 2000                        | The maximum number of tokens to pass to the LLM's API. This is default for all bots.                                  |
-| OPENAI_TEMPERATURE   | no       | 1                           | The sampling temperature to use, between 0 and 2. Higher values make the output more random, while lower values make it more focused and deterministic. This is default for all bots. |
-| MAX_PROMPT_TOKENS    | no       | 2000                        | Maximum number of prompt tokens. This is default for all bots.                                                        |
-| BOT_INSTRUCTION      | no       | 'You are a helpful assistant...` | Extra instruction to give your assistance. How should the assistant behave? This setting used by all bots.       |
+| Name                 | Required | Default Value | Description                                                                                                           | Environment Variables                   |
+|----------------------|----------|---------------|-----------------------------------------------------------------------------------------------------------------------|-----------------------------------------|
+| MATTERMOST_URL       | yes      | none          | The URL to the Mattermost server. This is default for all bots.                                                       | MATTERMOST_URL                          |
+| BOT_CONTEXT_MSG      | no       | 100           | The number of previous messages which are appended to the conversation with ChatGPT.                                  | BOT_CONTEXT_MSG                         |
+| PLUGINS              | no       | 'image-plugin graph-plugin' | The enabled plugins of the bot. This is default for all bots. By default, all bot (graph-plugin and image-plugin) are enabled. | PLUGINS          |
+| OPENAI_MAX_TOKENS    | no       | 2000          | The maximum number of tokens to pass to the LLM's API. This is default for all bots.                                  | OPENAI_MAX_TOKENS                       |
+| OPENAI_TEMPERATURE   | no       | 1             | The sampling temperature to use, between 0 and 2. Higher values make the output more random, while lower values make it more focused and deterministic. This is default for all bots. | OPENAI_TEMPERATURE    |
+| MAX_PROMPT_TOKENS    | no       | 2000          | Maximum number of prompt tokens. This is default for all bots.                                                        | MAX_PROMPT_TOKENS                       |
+| BOT_INSTRUCTION      | no       | 'You are a helpful assistant...` | Extra instruction to give your assistance. How should the assistant behave? This setting used by all bots.       | BOT_INSTRUCTION           |
 |
-| name                 | yes      | none                        | The name of the bot.                                                                                                  |
-| mattermostUrl        | no       | none                        | The URL to the Mattermost server for the bot.                                                                         |
-| mattermostToken      | yes      | none                        | The authentication token for the Mattermost bot.                                                                      |
-| type                 | yes      | none                        | The type of AI provider (e.g., openai, azure, google, cohere, anthropic).                                             |
-| apiKey               | yes      | none                        | The API key for the AI provider.                                                                                      |
-| apiBase              | no       | none                        | The base URL for the AI provider's API.                                                                               |
-| modelName            | no       | 'gpt-4o-mini'               | The name of the model to use for chat completions.                                                                    |
-| visionModelName      | no       | none                        | The name of the model to use for vision tasks.                                                                        |
-| imageModelName       | no       | none                        | The name of the model to use for image generation.                                                                    |
-| apiVersion           | no       | '2024-10-21'                | The API version to use for the AI provider.                                                                           |
-| instanceName         | no       | none                        | The instance name for the AI provider (specific to Azure).                                                            |
-| deploymentName       | no       | none                        | The deployment name for the AI provider (specific to Azure).                                                          |
-| visionKey            | no       | none                        | The API key for the vision tasks (specific to Azure).                                                                 |
-| visionInstanceName   | no       | none                        | The instance name for the vision tasks (specific to Azure).                                                           |
-| visionDeploymentName | no       | none                        | The deployment name for the vision tasks (specific to Azure).                                                         |
-| imageKey             | no       | none                        | The API key for the image generation tasks (specific to Azure).                                                       |
-| imageInstanceName    | no       | none                        | The instance name for the image generation tasks (specific to Azure).                                                 |
-| imageDeploymentName  | no       | none                        | The deployment name for the image generation tasks (specific to Azure).                                               |
-| maxTokens            | no       | 2000                        | The maximum number of tokens for the AI provider.                                                                     |
-| temperature          | no       | 1                           | The sampling temperature for the AI provider.                                                                         |
-| maxPromptTokens      | no       | 2000                        | The maximum number of prompt tokens for the AI provider.                                                              |
-| plugins              | no       | 'image-plugin graph-plugin' | The enabled plugins for the bot.                                                                                      |
+| name                 | yes      | none          | The name of the bot.                                                                                                  |                                         |
+| mattermostUrl        | no       | none          | The URL to the Mattermost server for the bot.                                                                         | MATTERMOST_URL                          |
+| mattermostToken      | yes      | none          | The authentication token for the Mattermost bot.                                                                      | \${name}_MATTERMOST_TOKEN, \${type}_MATTERMOST_TOKEN, MATTERMOST_TOKEN |
+| type                 | yes      | none          | The type of AI provider (e.g., openai, azure, google, cohere, anthropic).                                             |                                         |
+| apiKey               | yes      | none          | The API key for the AI provider.                                                                                      | OPENAI_API_KEY, AZURE_OPENAI_API_KEY, GOOGLE_API_KEY, COHERE_API_KEY, ANTHROPIC_API_KEY |
+| apiBase              | no       | none          | The base URL for the AI provider's API.                                                                               | OPENAI_API_BASE                         |
+| modelName            | no       | 'gpt-4o-mini' | The name of the model to use for chat completions.                                                                    | OPENAI_MODEL_NAME                       |
+| visionModelName      | no       | none          | The name of the model to use for vision tasks.                                                                        |                                         |
+| imageModelName       | no       | none          | The name of the model to use for image generation.                                                                    |                                         |
+| apiVersion           | no       | '2024-10-21'  | The API version to use for the AI provider.                                                                           | AZURE_OPENAI_API_VERSION                |
+| instanceName         | no       | none          | The instance name for the AI provider (specific to Azure).                                                            | AZURE_OPENAI_API_INSTANCE_NAME          |
+| deploymentName       | no       | none          | The deployment name for the AI provider (specific to Azure).                                                          | AZURE_OPENAI_API_DEPLOYMENT_NAME        |
+| visionKey            | no       | none          | The API key for the vision tasks (specific to Azure).                                                                 | AZURE_OPENAI_API_VISION_KEY             |
+| visionInstanceName   | no       | none          | The instance name for the vision tasks (specific to Azure).                                                           | AZURE_OPENAI_API_VISION_INSTANCE_NAME   |
+| visionDeploymentName | no       | none          | The deployment name for the vision tasks (specific to Azure).                                                         | AZURE_OPENAI_API_VISION_DEPLOYMENT_NAME |
+| imageKey             | no       | none          | The API key for the image generation tasks (specific to Azure).                                                       | AZURE_OPENAI_API_IMAGE_KEY              |
+| imageInstanceName    | no       | none          | The instance name for the image generation tasks (specific to Azure).                                                 | AZURE_OPENAI_API_IMAGE_INSTANCE_NAME    |
+| imageDeploymentName  | no       | none          | The deployment name for the image generation tasks (specific to Azure).                                               | AZURE_OPENAI_API_IMAGE_DEPLOYMENT_NAME  |
+| maxTokens            | no       | 2000          | The maximum number of tokens for the AI provider.                                                                     | OPENAI_MAX_TOKENS                       |
+| temperature          | no       | 1             | The sampling temperature for the AI provider.                                                                         | OPENAI_TEMPERATURE                      |
+| maxPromptTokens      | no       | 2000          | The maximum number of prompt tokens for the AI provider.                                                              | MAX_PROMPT_TOKENS                       |
+| plugins              | no       | 'image-plugin graph-plugin' | The enabled plugins for the bot.  By default, The bot graph-plugin and image-plugin are enabled.        | PLUGINS                                 |
 
 > **Note**
 > The `YFILES_SERVER_URL` is used for automatically converting text information created by the bot into diagrams.

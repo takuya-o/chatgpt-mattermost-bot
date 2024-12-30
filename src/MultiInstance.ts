@@ -8,19 +8,18 @@ import { getConfig } from './config'
 const botServices: Record<string, BotService> = {}
 
 /* Entry point */
+// eslint-disable-next-line max-lines-per-function
 async function main(): Promise<void> {
   const config = getConfig()
-  if (!config.bots) {
-    config.bots = [{}]
-  }
+  config.bots = config.bots || [{}] // 旧バージョンの環境変数での設定を期待する
   config.bots.forEach(async (botConfig: ProviderConfig) => {
     const name = botConfig.name ?? process.env['MATTERMOST_BOTNAME']
     if (botServices[name]) {
-      botLog.error(`Duplicate bot name detected: ${name}. Ignoring this bot configuration.`, botConfig)
+      botLog.error(`Duplicate bot name detected: ${name}. Ignoring this bot configuration.`, hideTokens(botConfig))
       return
     }
     if (!name) {
-      botLog.error('No name. Ignore provider config', botConfig)
+      botLog.error('No name. Ignore provider config', hideTokens(botConfig))
       return
     }
     botConfig.name = name
@@ -42,15 +41,16 @@ async function main(): Promise<void> {
       } else if (process.env['ANTHROPIC_API_KEY']) {
         botConfig.type = 'anthropic'
       } else {
-        botLog.error(`${name} No type. Ignore provider config`, botConfig)
+        botLog.error(`${name} No type. Ignore provider config`, hideTokens(botConfig))
         return
       }
-      botLog.warn(`${name} No type. Guessing type as ${botConfig.type}.`, botConfig)
+      botLog.warn(`${name} No type. Guessing type as ${botConfig.type}.`, hideTokens(botConfig))
     }
     botLog.log(`${name} Connected to Mattermost.`)
     // AZURE_MATTERMOST_TOKEN, GOOGLE_MATTERMOST_TOKEN... を新設
     const mattermostToken =
       botConfig.mattermostToken ??
+      process.env[`${name.toUpperCase()}_MATTERMOST_TOKEN`] ??
       process.env[`${botConfig.type.toUpperCase()}_MATTERMOST_TOKEN`] ??
       process.env['MATTERMOST_TOKEN']
     const mattermostClient = new MattermostClient(
@@ -78,6 +78,26 @@ async function main(): Promise<void> {
     botLog.trace(`${name} Listening to MM messages...`)
     botServices[name] = botService
   })
+  // if ( Object.keys(botServices).length === 0 ) {
+  //   botLog.error('No bot is configured. Exiting...')
+  //   process.exit(-1)
+  // }
+  // botLog.log('All bots started.')
+
+  function hideTokens(botConfig: ProviderConfig) {
+    if (botConfig.mattermostToken) {
+      botConfig.mattermostToken = '***'
+    }
+    if (botConfig.apiKey) {
+      botConfig.apiKey = '***'
+    }
+    if (botConfig.imageKey) {
+      botConfig.imageKey = '***'
+    }
+    if (botConfig.visionKey) {
+      botConfig.visionKey = '***'
+    }
+  }
 }
 
 main().catch(reason => {
