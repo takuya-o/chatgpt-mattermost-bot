@@ -5,6 +5,8 @@ PLUGINS: image-plugin
 OPENAI_MAX_TOKENS: 2000
 OPENAI_TEMPERATURE: 1
 MAX_PROMPT_TOKENS: 2000
+# Bot instructions
+BOT_INSTRUCTION: "You are a helpful assistant. Whenever users asks you for help you will provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the meta data of the messages."
 
 bots:
   - name: '@OpenAI'
@@ -68,5 +70,4 @@ bots:
     temperature: 1
     maxPromptTokens: 123904
     plugins: ''
-# Bot instructions
-BOT_INSTRUCTION: "You are a helpful assistant. Whenever users asks you for help you will provide them with succinct answers formatted using Markdown. You know the user's name as it is provided within the meta data of the messages."
+

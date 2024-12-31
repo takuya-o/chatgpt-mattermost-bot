@@ -2052,74 +2052,83 @@ var botServices = {};
 async function main() {
   const config2 = getConfig();
   config2.bots = config2.bots || [{}];
-  config2.bots.forEach(async (botConfig) => {
-    const name = botConfig.name ?? process.env["MATTERMOST_BOTNAME"];
-    if (botServices[name]) {
-      botLog.error(`Duplicate bot name detected: ${name}. Ignoring this bot configuration.`, hideTokens(botConfig));
-      return;
-    }
-    if (!name) {
-      botLog.error("No name. Ignore provider config", hideTokens(botConfig));
-      return;
-    }
-    botConfig.name = name;
-    if (!botConfig.type) {
-      if (process.env["AZURE_OPENAI_API_KEY"] || botConfig.apiVersion || botConfig.instanceName || botConfig.deploymentName) {
-        botConfig.type = "azure";
-      } else if (process.env["OPENAI_API_KEY"]) {
-        botConfig.type = "openai";
-      } else if (process.env["GOOGLE_API_KEY"]) {
-        botConfig.type = "google";
-      } else if (process.env["COHERE_API_KEY"]) {
-        botConfig.type = "cohere";
-      } else if (process.env["ANTHROPIC_API_KEY"]) {
-        botConfig.type = "anthropic";
-      } else {
-        botLog.error(`${name} No type. Ignore provider config`, hideTokens(botConfig));
+  await Promise.all(
+    config2.bots.map(async (botConfig) => {
+      const name = botConfig.name ?? process.env["MATTERMOST_BOTNAME"];
+      if (botServices[name]) {
+        botLog.error(`Duplicate bot name detected: ${name}. Ignoring this bot configuration.`, hideTokens(botConfig));
         return;
       }
-      botLog.warn(`${name} No type. Guessing type as ${botConfig.type}.`, hideTokens(botConfig));
-    }
-    botLog.log(`${name} Connected to Mattermost.`);
-    const mattermostToken = botConfig.mattermostToken ?? process.env[`${name.toUpperCase()}_MATTERMOST_TOKEN`] ?? process.env[`${botConfig.type.toUpperCase()}_MATTERMOST_TOKEN`] ?? process.env["MATTERMOST_TOKEN"];
-    const mattermostClient = new MattermostClient(
-      botConfig.mattermostUrl ?? config2.MATTERMOST_URL ?? process.env["MATTERMOST_URL"],
-      mattermostToken
-    );
-    botLog.log(`${name} Start LLM wrapper.`);
-    let openAIWrapper;
-    try {
-      openAIWrapper = new OpenAIWrapper(botConfig, mattermostClient);
-    } catch (e) {
-      botLog.error(`${name} Failed to create OpenAIWrapper. Ignore it.`, e);
-      return;
-    }
-    botLog.log(`${name} Start BotService.`);
-    const meId = (await mattermostClient.getClient().getMe()).id;
-    const botService = new BotService2(
-      mattermostClient,
-      meId,
-      name,
-      openAIWrapper,
-      botConfig.plugins ?? config2.PLUGINS ?? process.env["PLUGINS"] ?? "image-plugin graph-plugin"
-    );
-    mattermostClient.getWsClient().addMessageListener((e) => botService.onClientMessage(e));
-    botLog.trace(`${name} Listening to MM messages...`);
-    botServices[name] = botService;
-  });
+      if (!name) {
+        botLog.error("No name. Ignore provider config", hideTokens(botConfig));
+        return;
+      }
+      botConfig.name = name;
+      if (!botConfig.type) {
+        if (process.env["AZURE_OPENAI_API_KEY"] || botConfig.apiVersion || botConfig.instanceName || botConfig.deploymentName) {
+          botConfig.type = "azure";
+        } else if (process.env["OPENAI_API_KEY"]) {
+          botConfig.type = "openai";
+        } else if (process.env["GOOGLE_API_KEY"]) {
+          botConfig.type = "google";
+        } else if (process.env["COHERE_API_KEY"]) {
+          botConfig.type = "cohere";
+        } else if (process.env["ANTHROPIC_API_KEY"]) {
+          botConfig.type = "anthropic";
+        } else {
+          botLog.error(`${name} No type. Ignore provider config`, hideTokens(botConfig));
+          return;
+        }
+        botLog.warn(`${name} No type. Guessing type as ${botConfig.type}.`, hideTokens(botConfig));
+      }
+      botLog.log(`${name} Connected to Mattermost.`);
+      const mattermostToken = botConfig.mattermostToken ?? process.env[`${name.toUpperCase()}_MATTERMOST_TOKEN`] ?? process.env[`${botConfig.type.toUpperCase()}_MATTERMOST_TOKEN`] ?? process.env["MATTERMOST_TOKEN"];
+      const mattermostClient = new MattermostClient(
+        botConfig.mattermostUrl ?? config2.MATTERMOST_URL ?? process.env["MATTERMOST_URL"],
+        mattermostToken
+      );
+      botLog.log(`${name} Start LLM wrapper.`);
+      let openAIWrapper;
+      try {
+        openAIWrapper = new OpenAIWrapper(botConfig, mattermostClient);
+      } catch (e) {
+        botLog.error(`${name} Failed to create OpenAIWrapper. Ignore it.`, e);
+        return;
+      }
+      botLog.log(`${name} Start BotService.`);
+      const meId = (await mattermostClient.getClient().getMe()).id;
+      const botService = new BotService2(
+        mattermostClient,
+        meId,
+        name,
+        openAIWrapper,
+        botConfig.plugins ?? config2.PLUGINS ?? process.env["PLUGINS"] ?? "image-plugin graph-plugin"
+      );
+      mattermostClient.getWsClient().addMessageListener((e) => botService.onClientMessage(e));
+      botLog.trace(`${name} Listening to MM messages...`);
+      botServices[name] = botService;
+    })
+  );
+  if (Object.keys(botServices).length === 0) {
+    botLog.error("No bot is configured. Exiting...");
+    process.exit(-1);
+  }
+  botLog.log("All bots started.", Object.keys(botServices));
   function hideTokens(botConfig) {
-    if (botConfig.mattermostToken) {
-      botConfig.mattermostToken = "***";
+    const result = { ...botConfig };
+    if (result.mattermostToken) {
+      result.mattermostToken = "***";
     }
-    if (botConfig.apiKey) {
-      botConfig.apiKey = "***";
+    if (result.apiKey) {
+      result.apiKey = "***";
     }
-    if (botConfig.imageKey) {
-      botConfig.imageKey = "***";
+    if (result.imageKey) {
+      result.imageKey = "***";
     }
-    if (botConfig.visionKey) {
-      botConfig.visionKey = "***";
+    if (result.visionKey) {
+      result.visionKey = "***";
     }
+    return result;
   }
 }
 main().catch((reason) => {

@@ -1,6 +1,6 @@
 > **Note** 👀
 > - Configuration methods have changed in version 3.
-> - The version 3.0.1 have backward compatibility for enviromnent variables configurations on single instance.
+> - After version 3.1 have backward compatibility for enviromnent variables configurations on single instance.
 > - Recommend manually rewrite environment variables into `config.yaml` for multi instance.
 
 ## Enhanced from the [original yGuy/chatgpt-mattermost-bot](https://github.com/yGuy/chatgpt-mattermost-bot)
