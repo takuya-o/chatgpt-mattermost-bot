@@ -1,5 +1,5 @@
 > **Note** 👀
-> - Configuration methods have changed in version 3.
+> - Configuration methods have changed in version 3 for support multiple bots
 > - After version 3.1 have backward compatibility for enviromnent variables configurations on single instance.
 > - Recommend manually rewrite environment variables into `config.yaml` for multi instance.
 
@@ -140,7 +140,7 @@ BOT_INSTRUCTION: "You are a helpful assistant. Whenever users asks you for help 
 | OPENAI_TEMPERATURE   | no       | 1             | The sampling temperature to use, between 0 and 2. Higher values make the output more random, while lower values make it more focused and deterministic. This is default for all bots. | OPENAI_TEMPERATURE    |
 | MAX_PROMPT_TOKENS    | no       | 2000          | Maximum number of prompt tokens. This is default for all bots.                                                        | MAX_PROMPT_TOKENS                       |
 | BOT_INSTRUCTION      | no       | 'You are a helpful assistant...` | Extra instruction to give your assistance. How should the assistant behave? This setting used by all bots.       | BOT_INSTRUCTION           |
-|
+| **Individual bot settings** |||||
 | name                 | yes      | none          | The name of the bot.                                                                                                  |                                         |
 | mattermostUrl        | no       | none          | The URL to the Mattermost server for the bot.                                                                         | MATTERMOST_URL                          |
 | mattermostToken      | yes      | none          | The authentication token for the Mattermost bot.                                                                      | \${name}_MATTERMOST_TOKEN, \${type}_MATTERMOST_TOKEN, MATTERMOST_TOKEN |
