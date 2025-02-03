@@ -79,6 +79,8 @@ export class OpenAIWrapper {
         chatProvider = new OpenAIAdapter({
           apiKey,
           baseURL: `https://${instanceName}.openai.azure.com/openai/deployments/${deploymentName}`,
+          //  新しいエンドポイントは以下だけど上のURLでも行ける
+          //        https://${instanceName}.cognitiveservices.azure.com/openai/deployments/${deploymentName}
           defaultQuery: { 'api-version': apiVersion },
           defaultHeaders: { 'api-key': apiKey },
         })
@@ -282,10 +284,25 @@ export class OpenAIWrapper {
   ): Promise<AiResponse> {
     this.logMessages(messages)
     const NO_MESSAGE = 'Sorry, but it seems I found no valid response.'
-    const promptTokensDetails: OpenAI.Completions.CompletionUsage.PromptTokensDetails = { cached_tokens: 0 }
+    const completionTokensDetails: OpenAI.Completions.CompletionUsage.CompletionTokensDetails = {
+      // accepted_prediction_tokens: 0,
+      // audio_tokens: 0,
+      reasoning_tokens: 0,
+      // rejected_prediction_tokens: 0,
+    }
+    const promptTokensDetails: OpenAI.Completions.CompletionUsage.PromptTokensDetails = {
+      // audio_tokens: 0,
+      cached_tokens: 0,
+    }
     let aiResponse: AiResponse = {
       message: NO_MESSAGE,
-      usage: { prompt_tokens: 0, completion_tokens: 0, prompt_tokens_details: promptTokensDetails, total_tokens: 0 },
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        completion_tokens_details: completionTokensDetails,
+        prompt_tokens_details: promptTokensDetails,
+        total_tokens: 0,
+      },
       model: '',
     }
 
@@ -303,9 +320,13 @@ export class OpenAIWrapper {
         aiResponse.model += model + ' '
         if (usage && aiResponse.usage) {
           aiResponse.usage.prompt_tokens += usage.prompt_tokens
-          aiResponse.usage.completion_tokens += usage.completion_tokens
           aiResponse.usage.prompt_tokens_details!.cached_tokens! += usage?.prompt_tokens_details?.cached_tokens
             ? usage.prompt_tokens_details.cached_tokens
+            : 0
+          aiResponse.usage.completion_tokens += usage.completion_tokens
+          aiResponse.usage.completion_tokens_details!.reasoning_tokens! += usage?.completion_tokens_details
+            ?.reasoning_tokens
+            ? usage.completion_tokens_details.reasoning_tokens
             : 0
           aiResponse.usage.total_tokens += usage.total_tokens
         }
@@ -467,7 +488,7 @@ export class OpenAIWrapper {
       temperature: this.TEMPERATURE,
     }
     //TODO: messageのTOKEN数から最大値にする。レスポンス長くなるけど翻訳などが一発になる
-    if (currentModel.indexOf('o1') === 0) {
+    if (currentModel.indexOf('o1') === 0 || currentModel.startsWith('o3')) {
       chatCompletionOptions.max_completion_tokens = this.MAX_TOKENS
     } else {
       // gpt-4o では、こちらでないとエラー

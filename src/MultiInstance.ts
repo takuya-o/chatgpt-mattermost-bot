@@ -13,14 +13,18 @@ async function main(): Promise<void> {
   const config = getConfig()
   config.bots = config.bots || [{}] // 旧バージョンの環境変数での設定を期待する
   await Promise.all(
+    // eslint-disable-next-line max-lines-per-function
     config.bots.map(async (botConfig: ProviderConfig) => {
       const name = botConfig.name ?? process.env['MATTERMOST_BOTNAME']
       if (botServices[name]) {
-        botLog.error(`Duplicate bot name detected: ${name}. Ignoring this bot configuration.`, hideTokens(botConfig))
+        botLog.error(
+          `Duplicate bot name detected: ${name}. Ignoring this bot configuration.`,
+          MattermostClient.sanitizeConfig(botConfig),
+        )
         return
       }
       if (!name) {
-        botLog.error('No name. Ignore provider config', hideTokens(botConfig))
+        botLog.error('No name. Ignore provider config', MattermostClient.sanitizeConfig(botConfig))
         return
       }
       botConfig.name = name
@@ -32,32 +36,44 @@ async function main(): Promise<void> {
           botConfig.instanceName ||
           botConfig.deploymentName
         ) {
+          if (!botConfig.apiKey && process.env['AZURE_OPENAI_API_KEY']) {
+            botConfig.apiKey = process.env['AZURE_OPENAI_API_KEY']
+          }
           botConfig.type = 'azure'
         } else if (process.env['OPENAI_API_KEY']) {
+          if (!botConfig.apiKey && process.env['OPENAI_API_KEY']) {
+            botConfig.apiKey = process.env['OPENAI_API_KEY']
+          }
           botConfig.type = 'openai'
         } else if (process.env['GOOGLE_API_KEY']) {
+          if (!botConfig.apiKey && process.env['GOOGLE_API_KEY']) {
+            botConfig.apiKey = process.env['GOOGLE_API_KEY']
+          }
           botConfig.type = 'google'
         } else if (process.env['COHERE_API_KEY']) {
+          if (!botConfig.apiKey && process.env['COHERE_API_KEY']) {
+            botConfig.apiKey = process.env['COHERE_API_KEY']
+          }
           botConfig.type = 'cohere'
         } else if (process.env['ANTHROPIC_API_KEY']) {
+          if (!botConfig.apiKey && process.env['ANTHROPIC_API_KEY']) {
+            botConfig.apiKey = process.env['ANTHROPIC_API_KEY']
+          }
           botConfig.type = 'anthropic'
         } else {
-          botLog.error(`${name} No type. Ignore provider config`, hideTokens(botConfig))
+          botLog.error(`${name} No type. Ignore provider config`, MattermostClient.sanitizeConfig(botConfig))
           return
         }
-        botLog.warn(`${name} No type. Guessing type as ${botConfig.type}.`, hideTokens(botConfig))
+        botLog.warn(`${name} No type. Guessing type as ${botConfig.type}.`, MattermostClient.sanitizeConfig(botConfig))
       }
       botLog.log(`${name} Connected to Mattermost.`)
       // AZURE_MATTERMOST_TOKEN, GOOGLE_MATTERMOST_TOKEN... を新設
-      const mattermostToken =
-        botConfig.mattermostToken ??
+      botConfig.mattermostToken ??=
         process.env[`${name.toUpperCase()}_MATTERMOST_TOKEN`] ??
         process.env[`${botConfig.type.toUpperCase()}_MATTERMOST_TOKEN`] ??
-        process.env['MATTERMOST_TOKEN']
-      const mattermostClient = new MattermostClient(
-        botConfig.mattermostUrl ?? config.MATTERMOST_URL ?? process.env['MATTERMOST_URL'],
-        mattermostToken,
-      )
+        process.env['MATTERMOST_TOKEN']!
+      botConfig.mattermostUrl ??= config.MATTERMOST_URL ?? process.env['MATTERMOST_URL']
+      const mattermostClient = new MattermostClient(botConfig.mattermostUrl, botConfig.mattermostToken, botConfig)
       botLog.log(`${name} Start LLM wrapper.`)
       let openAIWrapper: OpenAIWrapper
       try {
@@ -85,23 +101,6 @@ async function main(): Promise<void> {
     process.exit(-1)
   }
   botLog.log('All bots started.', Object.keys(botServices))
-
-  function hideTokens(botConfig: ProviderConfig): ProviderConfig {
-    const result = { ...botConfig }
-    if (result.mattermostToken) {
-      result.mattermostToken = '***'
-    }
-    if (result.apiKey) {
-      result.apiKey = '***'
-    }
-    if (result.imageKey) {
-      result.imageKey = '***'
-    }
-    if (result.visionKey) {
-      result.visionKey = '***'
-    }
-    return result
-  }
 }
 
 main().catch(reason => {

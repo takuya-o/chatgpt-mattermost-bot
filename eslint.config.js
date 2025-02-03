@@ -20,10 +20,6 @@ export default tseslint.config({
     "import/order": "off",
     "sort-imports": "warn",
     "@typescript-eslint/no-non-null-assertion": "off",
-    "@typescript-eslint/no-unused-vars": ["error", {
-      "argsIgnorePattern": "^_",
-      "varsIgnorePattern": "^[A-Z]"
-    }],
     /** 命名規則 */
     "@typescript-eslint/naming-convention": [
       "error",
@@ -42,8 +38,14 @@ export default tseslint.config({
       }
     ],
     // 未使用の変数や関数は宣言禁止、ただし大文字で始まっているものはクラスなので許す
+    "@typescript-eslint/no-unused-vars": ["error", {
+      "argsIgnorePattern": "^_",
+      "caughtErrorsIgnorePattern": "^_",
+      "varsIgnorePattern": "^[A-Z]"
+    }],
     "no-unused-vars": ["error", {
       "argsIgnorePattern": "^_",
+      "caughtErrorsIgnorePattern": "^_",
       "varsIgnorePattern": "^[A-Z]"
     }],
     "no-console": "error"

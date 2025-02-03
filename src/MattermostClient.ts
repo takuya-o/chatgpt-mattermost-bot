@@ -1,5 +1,6 @@
 import Mattermost from '@mattermost/client'
 import { MessageListener } from '@mattermost/client/lib/websocket'
+import { ProviderConfig } from './types.js'
 import { WebSocket } from 'ws'
 import fetch from 'node-fetch'
 import { botLog as log } from './logging.js'
@@ -21,11 +22,15 @@ export class MattermostClient {
   private client: Mattermost.Client4
   private wsClient: Mattermost.WebSocketClient
 
-  constructor(matterMostURLString: string, mattermostToken: string) {
+  constructor(matterMostURLString: string, mattermostToken: string, botConfig?: ProviderConfig) {
     // mattermostTokenかmatterMostURLStringがundefinedだったらエラー
-    if (!mattermostToken || !matterMostURLString) {
-      log.error('MATTERMOST_TOKEN or MATTERMOST_URL is undefined')
-      throw new Error('MATTERMOST_TOKEN or MATTERMOST_URL is undefined')
+    if (!matterMostURLString) {
+      log.error('MATTERMOST_URL is undefined', MattermostClient.sanitizeConfig(botConfig))
+      throw new Error('MATTERMOST_URL is undefined')
+    }
+    if (!mattermostToken) {
+      log.error('MATTERMOST_TOKEN is undefined', matterMostURLString, MattermostClient.sanitizeConfig(botConfig))
+      throw new Error('MATTERMOST_TOKEN is undefined')
     }
     log.trace('Configuring Mattermost URL to ' + matterMostURLString)
     this.client = new Mattermost.Client4()
@@ -52,6 +57,25 @@ export class MattermostClient {
 
     this.workaroundWebsocketPackageLostIssue(this.wsClient)
     this.wsClient.initialize(wsUrl.toString(), mattermostToken)
+  }
+  public static sanitizeConfig(config?: ProviderConfig): ProviderConfig | undefined {
+    if (!config) {
+      return undefined
+    }
+    const sanitizedConfig = { ...config }
+    if (sanitizedConfig.apiKey) {
+      sanitizedConfig.apiKey = '****'
+    }
+    if (sanitizedConfig.visionKey) {
+      sanitizedConfig.visionKey = '****'
+    }
+    if (sanitizedConfig.imageKey) {
+      sanitizedConfig.imageKey = '****'
+    }
+    if (sanitizedConfig.mattermostToken) {
+      sanitizedConfig.mattermostToken = '****'
+    }
+    return sanitizedConfig
   }
 
   private workaroundWebsocketPackageLostIssue(webSocketClient: Mattermost.WebSocketClient) {

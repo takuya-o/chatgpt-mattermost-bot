@@ -128,7 +128,8 @@ export class BotService {
         chatmessages.push({
           role: 'assistant' as never,
           name: await this.userIdToName(threadPost.user_id),
-          content: threadPost.props.originalMessage ?? threadPost.message,
+          // contentをstring型にキャスト
+          content: (threadPost.props.originalMessage as string) ?? threadPost.message,
         })
       } else {
         // Mattermost スレッドに画像の有無で処理が変わる

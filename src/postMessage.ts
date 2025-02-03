@@ -187,9 +187,13 @@ export async function postMessage(
     if (!usage && !model) return ''
     let message = `\n${SYSTEM_MESSAGE_HEADER} `
     if (usage) {
-      message += ` Prompt:${usage.prompt_tokens} Completion:${usage.completion_tokens} `
+      message += ` Prompt:${usage.prompt_tokens} `
       if (usage.prompt_tokens_details?.cached_tokens) {
         message += `Cached:${usage.prompt_tokens_details.cached_tokens} `
+      }
+      message += `Completion:${usage.completion_tokens} `
+      if (usage.completion_tokens_details?.reasoning_tokens) {
+        message += `Reasoning:${usage.completion_tokens_details.reasoning_tokens} `
       }
       message += `Total:${usage.total_tokens}`
     }

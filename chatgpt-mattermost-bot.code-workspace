@@ -1,220 +1,248 @@
 {
-	"folders": [
-		{
-			"path": "."
-		}
-	],
-	"settings": {
-		"textlint.run": "onType"
-	},
-	"launch": {
-		"version": "0.2.0",
-		"configurations": [
-			{   // https://www.npmjs.com/package/tsx#debugging-method-1-run-tsx-directly-from-vscode
-				"name": "v3テスト",
-				"type": "node",
-				"request": "launch",
-				"envFile": "${workspaceFolder}/.env.debug",
+  "folders": [
+    {
+      "path": "."
+    }
+  ],
+  "settings": {
+    "textlint.run": "onType"
+  },
+  "launch": {
+    "version": "0.2.0",
+    "configurations": [
+      {   // https://www.npmjs.com/package/tsx#debugging-method-1-run-tsx-directly-from-vscode
+        "name": "v3テスト",
+        "type": "node",
+        "request": "launch",
+        "envFile": "${workspaceFolder}/.env.debug",
+        //"envFile": "${workspaceFolder}/.env",
+        // Debug current file in VSCode
+        "program": "${workspaceFolder}/src/MultiInstance.ts", //"${file}",
+        //"stopOnEntry": true,
+        /*
+        Path to tsx binary
+        Assuming locally installed
+        */
+        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/tsx",
+        /*
+        Open terminal when debugging starts (Optional)
+        Useful to see console.logs
+        */
+        "console": "integratedTerminal",
+        "internalConsoleOptions": "neverOpen", //デバッグ セッション中の [デバッグ コンソール] パネルの表示/非表示を制御
+        //"outputCapture": "std", //LogがDEBUG CONSOLEに出る
+        // Files to exclude from debugger (e.g. call stack)
+        "skipFiles": [
+          // Node.js internal core modules
+          "<node_internals>/**",
+          // Ignore all dependencies (optional)
+          "${workspaceFolder}/node_modules/**",
+        ],
+      },
+      {   // https://www.npmjs.com/package/tsx#debugging-method-1-run-tsx-directly-from-vscode
+        "name": "v3本番機テスト",
+        "type": "node",
+        "request": "launch",
+        "envFile": "${workspaceFolder}/.env",
+        // Debug current file in VSCode
+        "program": "${workspaceFolder}/src/MultiInstance.ts", //"${file}",
+        //"stopOnEntry": true,
+        /*
+        Path to tsx binary
+        Assuming locally installed
+        */
+        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/tsx",
+        /*
+        Open terminal when debugging starts (Optional)
+        Useful to see console.logs
+        */
+        "console": "integratedTerminal",
+        "internalConsoleOptions": "neverOpen", //デバッグ セッション中の [デバッグ コンソール] パネルの表示/非表示を制御
+        //"outputCapture": "std", //LogがDEBUG CONSOLEに出る
+        // Files to exclude from debugger (e.g. call stack)
+        "skipFiles": [
+          // Node.js internal core modules
+          "<node_internals>/**",
+          // Ignore all dependencies (optional)
+          "${workspaceFolder}/node_modules/**",
+        ],
+      },
+      {   // https://www.npmjs.com/package/tsx#debugging-method-1-run-tsx-directly-from-vscode
+          "name": "v3 過去互換の環境変数のみの設定のテスト",
+          "type": "node",
+          "request": "launch",
+          "envFile": "${workspaceFolder}/.env.debug-env",
+          //"envFile": "${workspaceFolder}/.env",
+          // Debug current file in VSCode
+          "program": "${workspaceFolder}/src/MultiInstance.ts", //"${file}",
+          //"stopOnEntry": true,
+          /*
+          Path to tsx binary
+          Assuming locally installed
+          */
+          "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/tsx",
+          /*
+          Open terminal when debugging starts (Optional)
+          Useful to see console.logs
+          */
+          "console": "integratedTerminal",
+          "internalConsoleOptions": "neverOpen", //デバッグ セッション中の [デバッグ コンソール] パネルの表示/非表示を制御
+          //"outputCapture": "std", //LogがDEBUG CONSOLEに出る
+          // Files to exclude from debugger (e.g. call stack)
+          "skipFiles": [
+              // Node.js internal core modules
+              "<node_internals>/**",
+              // Ignore all dependencies (optional)
+              "${workspaceFolder}/node_modules/**",
+          ],
+      },
+      {   // https://www.npmjs.com/package/tsx#debugging-method-1-run-tsx-directly-from-vscode
+        "name": "tsx - workspace",
+        "type": "node",
+        "request": "launch",
+        "envFile": "${workspaceFolder}/.env.debug.old",
                 //"envFile": "${workspaceFolder}/.env",
-				// Debug current file in VSCode
-				"program": "${workspaceFolder}/src/MultiInstance.ts", //"${file}",
+        // Debug current file in VSCode
+        "program": "${workspaceFolder}/src/MultiInstance.ts", //"${file}",
                 //"stopOnEntry": true,
-				/*
-				Path to tsx binary
-				Assuming locally installed
-				*/
-				"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/tsx",
-				/*
-				Open terminal when debugging starts (Optional)
-				Useful to see console.logs
-				*/
-				"console": "integratedTerminal",
-				"internalConsoleOptions": "neverOpen", //デバッグ セッション中の [デバッグ コンソール] パネルの表示/非表示を制御
-				//"outputCapture": "std", //LogがDEBUG CONSOLEに出る
-				// Files to exclude from debugger (e.g. call stack)
-				"skipFiles": [
-					// Node.js internal core modules
-					"<node_internals>/**",
-					// Ignore all dependencies (optional)
-					"${workspaceFolder}/node_modules/**",
-				],
-			},
-            {   // https://www.npmjs.com/package/tsx#debugging-method-1-run-tsx-directly-from-vscode
-                "name": "v3 過去互換の環境変数のみの設定のテスト",
-                "type": "node",
-                "request": "launch",
-                "envFile": "${workspaceFolder}/.env.debug-env",
-                //"envFile": "${workspaceFolder}/.env",
-                // Debug current file in VSCode
-                "program": "${workspaceFolder}/src/MultiInstance.ts", //"${file}",
-                //"stopOnEntry": true,
-                /*
-                Path to tsx binary
-                Assuming locally installed
-                */
-                "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/tsx",
-                /*
-                Open terminal when debugging starts (Optional)
-                Useful to see console.logs
-                */
-                "console": "integratedTerminal",
-                "internalConsoleOptions": "neverOpen", //デバッグ セッション中の [デバッグ コンソール] パネルの表示/非表示を制御
-                //"outputCapture": "std", //LogがDEBUG CONSOLEに出る
-                // Files to exclude from debugger (e.g. call stack)
-                "skipFiles": [
-                    // Node.js internal core modules
-                    "<node_internals>/**",
-                    // Ignore all dependencies (optional)
-                    "${workspaceFolder}/node_modules/**",
-                ],
-            },
-            {   // https://www.npmjs.com/package/tsx#debugging-method-1-run-tsx-directly-from-vscode
-				"name": "tsx - workspace",
-				"type": "node",
-				"request": "launch",
-				"envFile": "${workspaceFolder}/.env.debug.old",
-                //"envFile": "${workspaceFolder}/.env",
-				// Debug current file in VSCode
-				"program": "${workspaceFolder}/src/MultiInstance.ts", //"${file}",
-                //"stopOnEntry": true,
-				/*
-				Path to tsx binary
-				Assuming locally installed
-				*/
-				"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/tsx",
-				/*
-				Open terminal when debugging starts (Optional)
-				Useful to see console.logs
-				*/
-				"console": "integratedTerminal",
-				"internalConsoleOptions": "neverOpen", //デバッグ セッション中の [デバッグ コンソール] パネルの表示/非表示を制御
-				//"outputCapture": "std", //LogがDEBUG CONSOLEに出る
-				// Files to exclude from debugger (e.g. call stack)
-				"skipFiles": [
-					// Node.js internal core modules
-					"<node_internals>/**",
-					// Ignore all dependencies (optional)
-					"${workspaceFolder}/node_modules/**",
-				],
-			},
-            {   // https://www.npmjs.com/package/tsx#debugging-method-1-run-tsx-directly-from-vscode
-                "name": "tsx Cohere",
-                "type": "node",
-                "request": "launch",
-                "envFile": "${workspaceFolder}/.env.cohere.debug",
-                "program": "${workspaceFolder}/src/MultiInstance.ts", //"${file}",
-                /*
-                Path to tsx binary
-                Assuming locally installed
-                */
-                "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/tsx",
-                /*
-                Open terminal when debugging starts (Optional)
-                Useful to see console.logs
-                */
-                "console": "integratedTerminal",
-                "internalConsoleOptions": "neverOpen", //デバッグ セッション中の [デバッグ コンソール] パネルの表示/非表示を制御
-                "skipFiles": [
-                    // Node.js internal core modules
-                    "<node_internals>/**",
-                    // Ignore all dependencies (optional)
-                    "${workspaceFolder}/node_modules/**",
-                ],
-            },
-            {   // https://www.npmjs.com/package/tsx#debugging-method-1-run-tsx-directly-from-vscode
-                "name": "tsx Gemini",
-                "type": "node",
-                "request": "launch",
-                "envFile": "${workspaceFolder}/.env.gemini.debug",
-                "program": "${workspaceFolder}/src/MultiInstance.ts", //"${file}",
-                /*
-                Path to tsx binary
-                Assuming locally installed
-                */
-                "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/tsx",
-                /*
-                Open terminal when debugging starts (Optional)
-                Useful to see console.logs
-                */
-                "console": "integratedTerminal",
-                "internalConsoleOptions": "neverOpen", //デバッグ セッション中の [デバッグ コンソール] パネルの表示/非表示を制御
-                "skipFiles": [
-                    // Node.js internal core modules
-                    "<node_internals>/**",
-                    // Ignore all dependencies (optional)
-                    "${workspaceFolder}/node_modules/**",
-                ],
-            },
-            {
-                "name": "Launch via NPM", //自動的に出てるVSCODEのおすすめ
-                "request": "launch",
-                "envFile": "${workspaceFolder}/.env.debug",
-                "runtimeArgs": [
-                    "run-script",
-                    "debug"
-                ],
-                "runtimeExecutable": "npm",
-                "skipFiles": [
-                    "<node_internals>/**",
-                    // Ignore all dependencies (optional)
-                    "${workspaceFolder}/node_modules/**",
-                ],
-                "type": "node", //Logが出ない
-                "outputCapture": "std" //LogがDEBUG CONSOLEに出る。
-            },
-            {
-                "name": "Run npm start by env.debug",
-                "request": "launch",
-                "envFile": "${workspaceFolder}/.env.debug",
-                "command": "npm start",
-                "type": "node-terminal"
-            },
-            {
-                "name": "Run npm start by OpenAI",
-                "request": "launch",
-                "envFile": "${workspaceFolder}/.env.openai",
-                "command": "npm start",
-                "type": "node-terminal"
-            },
-            {
-                "name": "Run production by env.debug",
-                "request": "launch",
-                "envFile": "${workspaceFolder}/.env.debug",
-                "command": "npm run production",
-                "type": "node-terminal"
-            },
-            {
-                "name": "TypeScriptプログラムの起動 via NPM",
-                "request": "launch",
-                "runtimeArgs": [
-                    "run",
-                    "start"
-                ],
-                "envFile": "${workspaceFolder}/.env.debug",
-                "runtimeExecutable": "npm",
-                "skipFiles": [
-                    "<node_internals>/**"
-                ],
-                "type": "node"
-            },
-            {
-                "name": "Launch Program",
-                "program": "${workspaceFolder}/dist/botservice.mjs",
-                "envFile": "${workspaceFolder}/.env.debug",
-                "request": "launch",
-                "skipFiles": [
-                    "<node_internals>/**"
-                ],
-                "type": "node"
-            },
-		]
-	},
-	"extensions": {
-		"recommendations": [
-			"dbaeumer.vscode-eslint",
-			"esbenp.prettier-vscode",
+        /*
+        Path to tsx binary
+        Assuming locally installed
+        */
+        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/tsx",
+        /*
+        Open terminal when debugging starts (Optional)
+        Useful to see console.logs
+        */
+        "console": "integratedTerminal",
+        "internalConsoleOptions": "neverOpen", //デバッグ セッション中の [デバッグ コンソール] パネルの表示/非表示を制御
+        //"outputCapture": "std", //LogがDEBUG CONSOLEに出る
+        // Files to exclude from debugger (e.g. call stack)
+        "skipFiles": [
+          // Node.js internal core modules
+          "<node_internals>/**",
+          // Ignore all dependencies (optional)
+          "${workspaceFolder}/node_modules/**",
+        ],
+      },
+      {   // https://www.npmjs.com/package/tsx#debugging-method-1-run-tsx-directly-from-vscode
+          "name": "tsx Cohere",
+          "type": "node",
+          "request": "launch",
+          "envFile": "${workspaceFolder}/.env.cohere.debug",
+          "program": "${workspaceFolder}/src/MultiInstance.ts", //"${file}",
+          /*
+          Path to tsx binary
+          Assuming locally installed
+          */
+          "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/tsx",
+          /*
+          Open terminal when debugging starts (Optional)
+          Useful to see console.logs
+          */
+          "console": "integratedTerminal",
+          "internalConsoleOptions": "neverOpen", //デバッグ セッション中の [デバッグ コンソール] パネルの表示/非表示を制御
+          "skipFiles": [
+              // Node.js internal core modules
+              "<node_internals>/**",
+              // Ignore all dependencies (optional)
+              "${workspaceFolder}/node_modules/**",
+          ],
+      },
+      {   // https://www.npmjs.com/package/tsx#debugging-method-1-run-tsx-directly-from-vscode
+          "name": "tsx Gemini",
+          "type": "node",
+          "request": "launch",
+          "envFile": "${workspaceFolder}/.env.gemini.debug",
+          "program": "${workspaceFolder}/src/MultiInstance.ts", //"${file}",
+          /*
+          Path to tsx binary
+          Assuming locally installed
+          */
+          "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/tsx",
+          /*
+          Open terminal when debugging starts (Optional)
+          Useful to see console.logs
+          */
+          "console": "integratedTerminal",
+          "internalConsoleOptions": "neverOpen", //デバッグ セッション中の [デバッグ コンソール] パネルの表示/非表示を制御
+          "skipFiles": [
+              // Node.js internal core modules
+              "<node_internals>/**",
+              // Ignore all dependencies (optional)
+              "${workspaceFolder}/node_modules/**",
+          ],
+      },
+      {
+          "name": "Launch via NPM", //自動的に出てるVSCODEのおすすめ
+          "request": "launch",
+          "envFile": "${workspaceFolder}/.env.debug",
+          "runtimeArgs": [
+              "run-script",
+              "debug"
+          ],
+          "runtimeExecutable": "npm",
+          "skipFiles": [
+              "<node_internals>/**",
+              // Ignore all dependencies (optional)
+              "${workspaceFolder}/node_modules/**",
+          ],
+          "type": "node", //Logが出ない
+          "outputCapture": "std" //LogがDEBUG CONSOLEに出る。
+      },
+      {
+          "name": "Run npm start by env.debug",
+          "request": "launch",
+          "envFile": "${workspaceFolder}/.env.debug",
+          "command": "npm start",
+          "type": "node-terminal"
+      },
+      {
+          "name": "Run npm start by OpenAI",
+          "request": "launch",
+          "envFile": "${workspaceFolder}/.env.openai",
+          "command": "npm start",
+          "type": "node-terminal"
+      },
+      {
+          "name": "Run production by env.debug",
+          "request": "launch",
+          "envFile": "${workspaceFolder}/.env.debug",
+          "command": "npm run production",
+          "type": "node-terminal"
+      },
+      {
+          "name": "TypeScriptプログラムの起動 via NPM",
+          "request": "launch",
+          "runtimeArgs": [
+              "run",
+              "start"
+          ],
+          "envFile": "${workspaceFolder}/.env.debug",
+          "runtimeExecutable": "npm",
+          "skipFiles": [
+              "<node_internals>/**"
+          ],
+          "type": "node"
+      },
+      {
+          "name": "Launch Program",
+          "program": "${workspaceFolder}/dist/botservice.mjs",
+          "envFile": "${workspaceFolder}/.env.debug",
+          "request": "launch",
+          "skipFiles": [
+              "<node_internals>/**"
+          ],
+          "type": "node"
+      },
+    ]
+  },
+  "extensions": {
+    "recommendations": [
+      "dbaeumer.vscode-eslint",
+      "esbenp.prettier-vscode",
             "taichi.vscode-textlint",
             "ms-azuretools.vscode-docker"
-		]
-	}
+    ]
+  }
 }

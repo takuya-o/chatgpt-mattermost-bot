@@ -458,9 +458,13 @@ Error: ${e.message}`;
     let message = `
 ${SYSTEM_MESSAGE_HEADER} `;
     if (usage) {
-      message += ` Prompt:${usage.prompt_tokens} Completion:${usage.completion_tokens} `;
+      message += ` Prompt:${usage.prompt_tokens} `;
       if (usage.prompt_tokens_details?.cached_tokens) {
         message += `Cached:${usage.prompt_tokens_details.cached_tokens} `;
+      }
+      message += `Completion:${usage.completion_tokens} `;
+      if (usage.completion_tokens_details?.reasoning_tokens) {
+        message += `Reasoning:${usage.completion_tokens_details.reasoning_tokens} `;
       }
       message += `Total:${usage.total_tokens}`;
     }
@@ -614,6 +618,7 @@ var BotService2 = class {
         chatmessages.push({
           role: "assistant",
           name: await this.userIdToName(threadPost.user_id),
+          // contentをstring型にキャスト
           content: threadPost.props.originalMessage ?? threadPost.message
         });
       } else {
@@ -903,13 +908,17 @@ if (!global.WebSocket) {
   global.WebSocket = WebSocket;
 }
 global.fetch = fetch3;
-var MattermostClient = class {
+var MattermostClient = class _MattermostClient {
   client;
   wsClient;
-  constructor(matterMostURLString, mattermostToken) {
-    if (!mattermostToken || !matterMostURLString) {
-      botLog.error("MATTERMOST_TOKEN or MATTERMOST_URL is undefined");
-      throw new Error("MATTERMOST_TOKEN or MATTERMOST_URL is undefined");
+  constructor(matterMostURLString, mattermostToken, botConfig) {
+    if (!matterMostURLString) {
+      botLog.error("MATTERMOST_URL is undefined", _MattermostClient.sanitizeConfig(botConfig));
+      throw new Error("MATTERMOST_URL is undefined");
+    }
+    if (!mattermostToken) {
+      botLog.error("MATTERMOST_TOKEN is undefined", matterMostURLString, _MattermostClient.sanitizeConfig(botConfig));
+      throw new Error("MATTERMOST_TOKEN is undefined");
     }
     botLog.trace("Configuring Mattermost URL to " + matterMostURLString);
     this.client = new Mattermost.Client4();
@@ -931,6 +940,25 @@ var MattermostClient = class {
     });
     this.workaroundWebsocketPackageLostIssue(this.wsClient);
     this.wsClient.initialize(wsUrl.toString(), mattermostToken);
+  }
+  static sanitizeConfig(config2) {
+    if (!config2) {
+      return void 0;
+    }
+    const sanitizedConfig = { ...config2 };
+    if (sanitizedConfig.apiKey) {
+      sanitizedConfig.apiKey = "****";
+    }
+    if (sanitizedConfig.visionKey) {
+      sanitizedConfig.visionKey = "****";
+    }
+    if (sanitizedConfig.imageKey) {
+      sanitizedConfig.imageKey = "****";
+    }
+    if (sanitizedConfig.mattermostToken) {
+      sanitizedConfig.mattermostToken = "****";
+    }
+    return sanitizedConfig;
   }
   workaroundWebsocketPackageLostIssue(webSocketClient) {
     let messageCount = 100;
@@ -1622,6 +1650,8 @@ var OpenAIWrapper = class {
         chatProvider = new OpenAIAdapter({
           apiKey,
           baseURL: `https://${instanceName}.openai.azure.com/openai/deployments/${deploymentName}`,
+          //  新しいエンドポイントは以下だけど上のURLでも行ける
+          //        https://${instanceName}.cognitiveservices.azure.com/openai/deployments/${deploymentName}
           defaultQuery: { "api-version": apiVersion },
           defaultHeaders: { "api-key": apiKey }
         });
@@ -1798,10 +1828,25 @@ var OpenAIWrapper = class {
   async continueThread(messages, msgData) {
     this.logMessages(messages);
     const NO_MESSAGE = "Sorry, but it seems I found no valid response.";
-    const promptTokensDetails = { cached_tokens: 0 };
+    const completionTokensDetails = {
+      // accepted_prediction_tokens: 0,
+      // audio_tokens: 0,
+      reasoning_tokens: 0
+      // rejected_prediction_tokens: 0,
+    };
+    const promptTokensDetails = {
+      // audio_tokens: 0,
+      cached_tokens: 0
+    };
     let aiResponse = {
       message: NO_MESSAGE,
-      usage: { prompt_tokens: 0, completion_tokens: 0, prompt_tokens_details: promptTokensDetails, total_tokens: 0 },
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        completion_tokens_details: completionTokensDetails,
+        prompt_tokens_details: promptTokensDetails,
+        total_tokens: 0
+      },
       model: ""
     };
     let maxChainLength = 7;
@@ -1813,8 +1858,9 @@ var OpenAIWrapper = class {
         aiResponse.model += model + " ";
         if (usage && aiResponse.usage) {
           aiResponse.usage.prompt_tokens += usage.prompt_tokens;
-          aiResponse.usage.completion_tokens += usage.completion_tokens;
           aiResponse.usage.prompt_tokens_details.cached_tokens += usage?.prompt_tokens_details?.cached_tokens ? usage.prompt_tokens_details.cached_tokens : 0;
+          aiResponse.usage.completion_tokens += usage.completion_tokens;
+          aiResponse.usage.completion_tokens_details.reasoning_tokens += usage?.completion_tokens_details?.reasoning_tokens ? usage.completion_tokens_details.reasoning_tokens : 0;
           aiResponse.usage.total_tokens += usage.total_tokens;
         }
         if (responseMessage.function_call) {
@@ -1953,7 +1999,7 @@ var OpenAIWrapper = class {
       messages,
       temperature: this.TEMPERATURE
     };
-    if (currentModel.indexOf("o1") === 0) {
+    if (currentModel.indexOf("o1") === 0 || currentModel.startsWith("o3")) {
       chatCompletionOptions.max_completion_tokens = this.MAX_TOKENS;
     } else {
       chatCompletionOptions.max_tokens = this.MAX_TOKENS;
@@ -2053,40 +2099,57 @@ async function main() {
   const config2 = getConfig();
   config2.bots = config2.bots || [{}];
   await Promise.all(
+    // eslint-disable-next-line max-lines-per-function
     config2.bots.map(async (botConfig) => {
       const name = botConfig.name ?? process.env["MATTERMOST_BOTNAME"];
       if (botServices[name]) {
-        botLog.error(`Duplicate bot name detected: ${name}. Ignoring this bot configuration.`, hideTokens(botConfig));
+        botLog.error(
+          `Duplicate bot name detected: ${name}. Ignoring this bot configuration.`,
+          MattermostClient.sanitizeConfig(botConfig)
+        );
         return;
       }
       if (!name) {
-        botLog.error("No name. Ignore provider config", hideTokens(botConfig));
+        botLog.error("No name. Ignore provider config", MattermostClient.sanitizeConfig(botConfig));
         return;
       }
       botConfig.name = name;
       if (!botConfig.type) {
         if (process.env["AZURE_OPENAI_API_KEY"] || botConfig.apiVersion || botConfig.instanceName || botConfig.deploymentName) {
+          if (!botConfig.apiKey && process.env["AZURE_OPENAI_API_KEY"]) {
+            botConfig.apiKey = process.env["AZURE_OPENAI_API_KEY"];
+          }
           botConfig.type = "azure";
         } else if (process.env["OPENAI_API_KEY"]) {
+          if (!botConfig.apiKey && process.env["OPENAI_API_KEY"]) {
+            botConfig.apiKey = process.env["OPENAI_API_KEY"];
+          }
           botConfig.type = "openai";
         } else if (process.env["GOOGLE_API_KEY"]) {
+          if (!botConfig.apiKey && process.env["GOOGLE_API_KEY"]) {
+            botConfig.apiKey = process.env["GOOGLE_API_KEY"];
+          }
           botConfig.type = "google";
         } else if (process.env["COHERE_API_KEY"]) {
+          if (!botConfig.apiKey && process.env["COHERE_API_KEY"]) {
+            botConfig.apiKey = process.env["COHERE_API_KEY"];
+          }
           botConfig.type = "cohere";
         } else if (process.env["ANTHROPIC_API_KEY"]) {
+          if (!botConfig.apiKey && process.env["ANTHROPIC_API_KEY"]) {
+            botConfig.apiKey = process.env["ANTHROPIC_API_KEY"];
+          }
           botConfig.type = "anthropic";
         } else {
-          botLog.error(`${name} No type. Ignore provider config`, hideTokens(botConfig));
+          botLog.error(`${name} No type. Ignore provider config`, MattermostClient.sanitizeConfig(botConfig));
           return;
         }
-        botLog.warn(`${name} No type. Guessing type as ${botConfig.type}.`, hideTokens(botConfig));
+        botLog.warn(`${name} No type. Guessing type as ${botConfig.type}.`, MattermostClient.sanitizeConfig(botConfig));
       }
       botLog.log(`${name} Connected to Mattermost.`);
-      const mattermostToken = botConfig.mattermostToken ?? process.env[`${name.toUpperCase()}_MATTERMOST_TOKEN`] ?? process.env[`${botConfig.type.toUpperCase()}_MATTERMOST_TOKEN`] ?? process.env["MATTERMOST_TOKEN"];
-      const mattermostClient = new MattermostClient(
-        botConfig.mattermostUrl ?? config2.MATTERMOST_URL ?? process.env["MATTERMOST_URL"],
-        mattermostToken
-      );
+      botConfig.mattermostToken ??= process.env[`${name.toUpperCase()}_MATTERMOST_TOKEN`] ?? process.env[`${botConfig.type.toUpperCase()}_MATTERMOST_TOKEN`] ?? process.env["MATTERMOST_TOKEN"];
+      botConfig.mattermostUrl ??= config2.MATTERMOST_URL ?? process.env["MATTERMOST_URL"];
+      const mattermostClient = new MattermostClient(botConfig.mattermostUrl, botConfig.mattermostToken, botConfig);
       botLog.log(`${name} Start LLM wrapper.`);
       let openAIWrapper;
       try {
@@ -2114,22 +2177,6 @@ async function main() {
     process.exit(-1);
   }
   botLog.log("All bots started.", Object.keys(botServices));
-  function hideTokens(botConfig) {
-    const result = { ...botConfig };
-    if (result.mattermostToken) {
-      result.mattermostToken = "***";
-    }
-    if (result.apiKey) {
-      result.apiKey = "***";
-    }
-    if (result.imageKey) {
-      result.imageKey = "***";
-    }
-    if (result.visionKey) {
-      result.visionKey = "***";
-    }
-    return result;
-  }
 }
 main().catch((reason) => {
   botLog.error(reason);
