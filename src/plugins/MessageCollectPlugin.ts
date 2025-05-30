@@ -1,6 +1,6 @@
 import { AiResponse, MattermostMessageData } from '../types.js'
 import { Client4 } from '@mattermost/client'
-import { OpenAIWrapper } from 'src/OpenAIWrapper.js'
+import { OpenAIWrapper } from '../OpenAIWrapper.js'
 import { PluginBase } from './PluginBase.js'
 import { Post } from '@mattermost/types/lib/posts'
 
@@ -40,7 +40,7 @@ export class MessageCollectPlugin extends PluginBase<MessageCollectArgs> {
         await this.getPosts(
           msgData.post,
           { lookBackTime: args.lookBackTime, postCount: args.messageCount },
-          openAIWrapper.getMattemostClient().getClient(),
+          openAIWrapper.getMattermostClient().getClient(),
         ),
       ),
       intermediate: true,

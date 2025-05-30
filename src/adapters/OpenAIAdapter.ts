@@ -19,10 +19,11 @@ export class OpenAIAdapter implements AIProvider {
 
   async createMessage(
     options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
-  ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+  ): Promise<{ response: OpenAI.Chat.Completions.ChatCompletion; images: Blob[] }> {
     // OpenAI.APIErrorをキャッチしてエラーをログに出力する
     try {
-      return this.openai.chat.completions.create(options)
+      const response = await this.openai.chat.completions.create(options)
+      return { response, images: [] }
     } catch (error) {
       if (error instanceof OpenAI.APIError) {
         log.error(`OpenAI API Error: ${error.status} ${error.name}`, error)

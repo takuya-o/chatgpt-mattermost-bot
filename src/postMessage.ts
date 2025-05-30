@@ -207,7 +207,7 @@ async function newPost(
   botService: BotService,
   answer: string,
   post: Post,
-  fileId: string | undefined,
+  fileId: string[] | undefined,
   props: Record<string, string> | undefined,
 ) {
   // botLog.trace({ answer })
@@ -219,7 +219,7 @@ async function newPost(
       channel_id: post.channel_id,
       props,
       root_id: post.root_id || post.id,
-      file_ids: fileId ? [fileId] : undefined,
+      file_ids: fileId ? fileId : undefined,
     } as Post)
   botLog.trace({ newPost })
 }

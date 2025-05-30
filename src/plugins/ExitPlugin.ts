@@ -1,5 +1,5 @@
 import { AiResponse, MattermostMessageData } from '../types.js'
-import { OpenAIWrapper } from 'src/OpenAIWrapper.js'
+import { OpenAIWrapper } from '../OpenAIWrapper.js'
 import { PluginBase } from './PluginBase.js'
 
 export class ExitPlugin extends PluginBase<never> {

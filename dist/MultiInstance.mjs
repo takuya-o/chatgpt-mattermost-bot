@@ -44,7 +44,7 @@ var ExitPlugin = class extends PluginBase {
 import FormData3 from "form-data";
 
 // src/plugins/GraphPlugin.ts
-import FormData from "form-data";
+import FormData2 from "form-data";
 import fetch2 from "node-fetch";
 var GraphPlugin = class extends PluginBase {
   yFilesGPTServerUrl = process.env["YFILES_SERVER_URL"];
@@ -81,7 +81,7 @@ var GraphPlugin = class extends PluginBase {
       return await this.processGraphResponse(
         response.responseMessage.content,
         msgData.post.channel_id,
-        openAIWrapper.getMattemostClient().getClient()
+        openAIWrapper.getMattermostClient().getClient()
       );
     }
     return aiResponse;
@@ -108,7 +108,7 @@ var GraphPlugin = class extends PluginBase {
           result.message = `${pre} [see attached image] ${post}`;
         }
         result.props = { originalMessage: content };
-        result.fileId = fileId;
+        result.fileId = [fileId];
       } catch (e) {
         this.log.error(e);
         this.log.error(`The input was:
@@ -134,7 +134,7 @@ ${graphContent}`);
   }
   async jsonToFileId(jsonString, channelId, mattermostClient) {
     const svgString = await this.generateSvg(jsonString);
-    const form = new FormData();
+    const form = new FormData2();
     form.append("channel_id", channelId);
     form.append("files", Buffer.from(svgString), "diagram.svg");
     this.log.trace("Appending Diagram SVG", svgString);
@@ -145,7 +145,6 @@ ${graphContent}`);
 };
 
 // src/plugins/ImagePlugin.ts
-import FormData2 from "form-data";
 var ImagePlugin = class extends PluginBase {
   GPT_INSTRUCTIONS = "You are a prompt engineer who helps a user to create good prompts for the image AI DALL-E. The user will provide you with a short image description and you transform this into a proper prompt text. When creating the prompt first describe the looks and structure of the image. Secondly, describe the photography style, like camera angle, camera position, lenses. Third, describe the lighting and specific colors. Your prompt have to focus on the overall image and not describe any details on it. Consider adding buzzwords, for example 'detailed', 'hyper-detailed', 'very realistic', 'sketchy', 'street-art', 'drawing', or similar words. Keep the prompt as simple as possible and never get longer than 400 characters. You may only answer with the resulting prompt and provide no description or explanations.";
   setup(plugins) {
@@ -170,13 +169,13 @@ var ImagePlugin = class extends PluginBase {
           const fileId = await this.base64ToFile(
             base64Image,
             msgData.post.channel_id,
-            openAIWrapper.getMattemostClient().getClient()
+            openAIWrapper.getMattermostClient().getClient()
           );
           aiResponse.message = "Here is the image you requested: " + imagePrompt;
           aiResponse.props = {
             originalMessage: "Sure here is the image you requested. <IMAGE>" + imagePrompt + "</IMAGE>"
           };
-          aiResponse.fileId = fileId;
+          aiResponse.fileId = [fileId];
         }
       }
     } catch (e) {
@@ -207,9 +206,9 @@ The input was:${args.imageDescription}`;
     return response?.responseMessage?.content;
   }
   async base64ToFile(b64String, channelId, mattermostClient) {
-    const form = new FormData2();
+    const form = new FormData();
     form.append("channel_id", channelId);
-    form.append("files", Buffer.from(b64String, "base64"), "image.png");
+    form.append("files", new Blob([Buffer.from(b64String, "base64")], { type: "image/png" }), "image.png");
     const response = await mattermostClient.uploadFile(form);
     this.log.trace("Uploaded a file with id", response.file_infos[0].id);
     return response.file_infos[0].id;
@@ -241,7 +240,7 @@ var MessageCollectPlugin = class extends PluginBase {
         await this.getPosts(
           msgData.post,
           { lookBackTime: args.lookBackTime, postCount: args.messageCount },
-          openAIWrapper.getMattemostClient().getClient()
+          openAIWrapper.getMattermostClient().getClient()
         )
       ),
       intermediate: true
@@ -480,7 +479,7 @@ async function newPost(botService, answer, post, fileId, props) {
     channel_id: post.channel_id,
     props,
     root_id: post.root_id || post.id,
-    file_ids: fileId ? [fileId] : void 0
+    file_ids: fileId ? fileId : void 0
   });
   botLog.trace({ newPost: newPost2 });
 }
@@ -547,6 +546,7 @@ var additionalBotInstructions = config.BOT_INSTRUCTION ?? process.env["BOT_INSTR
 var BotService2 = class {
   mattermostClient;
   meId;
+  // ex. @ChatGPTのID
   name;
   // ex. @ChatGPT
   openAIWrapper;
@@ -614,63 +614,75 @@ var BotService2 = class {
   // eslint-disable-next-line max-lines-per-function
   async appendThreadPosts(posts, chatmessages, unuseImages) {
     for (const threadPost of posts) {
+      let role = "user";
+      let message = threadPost.message;
       if (threadPost.user_id === this.meId) {
+        role = "assistant";
+        if (threadPost.props.originalMessage) {
+          message = threadPost.props.originalMessage;
+        }
+      }
+      if (!unuseImages && (threadPost.metadata.files?.length > 0 || threadPost.metadata.images || threadPost.metadata.embeds)) {
+        role = "user";
+        const content = [{ type: "text", text: message }];
+        if (threadPost.metadata.files) {
+          await Promise.all(
+            threadPost.metadata.files.map(async (file) => {
+              const originalUrl = await this.mattermostClient.getClient().getFileUrl(file.id, NaN);
+              const url = await this.getBase64Image(
+                originalUrl,
+                this.mattermostClient.getClient().getToken(),
+                file.mime_type,
+                file.width,
+                file.height
+              );
+              if (url) {
+                content.push(
+                  { type: "image_url", image_url: { url } }
+                  //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
+                );
+              }
+            })
+          );
+        }
+        if (threadPost.metadata.embeds) {
+          for (const embed of threadPost.metadata.embeds) {
+            if (embed.url && embed.type === "link") {
+              const url = await this.getBase64Image(embed.url, this.mattermostClient.getClient().getToken());
+              if (url) {
+                content.push({ type: "image_url", image_url: { url } });
+              }
+            } else {
+              botLog.warn(`Unsupported embed type: ${embed.type}. Skipping.`, embed);
+            }
+          }
+        }
+        if (threadPost.metadata.images) {
+          await Promise.all(
+            Object.keys(threadPost.metadata.images).map(async (url) => {
+              const postImage = threadPost.metadata.images[url];
+              url = await this.getBase64Image(
+                url,
+                this.mattermostClient.getClient().getToken(),
+                postImage.format,
+                postImage.width,
+                postImage.height
+              );
+              content.push({ type: "image_url", image_url: { url } });
+            })
+          );
+        }
         chatmessages.push({
-          role: "assistant",
+          role,
           name: await this.userIdToName(threadPost.user_id),
-          // contentをstring型にキャスト
-          content: threadPost.props.originalMessage ?? threadPost.message
+          content
         });
       } else {
-        if (!unuseImages && (threadPost.metadata.files?.length > 0 || threadPost.metadata.images)) {
-          const content = [{ type: "text", text: threadPost.message }];
-          if (threadPost.metadata.files) {
-            await Promise.all(
-              threadPost.metadata.files.map(async (file) => {
-                const originalUrl = await this.mattermostClient.getClient().getFileUrl(file.id, NaN);
-                const url = await this.getBase64Image(
-                  originalUrl,
-                  this.mattermostClient.getClient().getToken(),
-                  file.mime_type,
-                  file.width,
-                  file.height
-                );
-                if (url) {
-                  content.push(
-                    { type: "image_url", image_url: { url } }
-                    //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
-                  );
-                }
-              })
-            );
-          }
-          if (threadPost.metadata.images) {
-            await Promise.all(
-              Object.keys(threadPost.metadata.images).map(async (url) => {
-                const postImage = threadPost.metadata.images[url];
-                url = await this.getBase64Image(
-                  url,
-                  this.mattermostClient.getClient().getToken(),
-                  postImage.format,
-                  postImage.width,
-                  postImage.height
-                );
-                content.push({ type: "image_url", image_url: { url } });
-              })
-            );
-          }
-          chatmessages.push({
-            role: "user",
-            name: await this.userIdToName(threadPost.user_id),
-            content
-          });
-        } else {
-          chatmessages.push({
-            role: "user",
-            name: await this.userIdToName(threadPost.user_id),
-            content: threadPost.message
-          });
-        }
+        chatmessages.push({
+          role,
+          name: await this.userIdToName(threadPost.user_id),
+          content: message
+        });
       }
     }
   }
@@ -698,7 +710,7 @@ var BotService2 = class {
       return { ok: false };
     });
     if (!response.ok) {
-      botLog.error(`Fech Image URL HTTP error! status: ${response?.status}`);
+      botLog.error(`Fetch Image URL HTTP error! status: ${response?.status}`);
       return "";
     }
     let buffer = Buffer.from(await response.arrayBuffer());
@@ -885,19 +897,6 @@ var BotService2 = class {
     }
     return username;
   }
-  /**
-   * Looks up the mattermost userId for the given username.
-   * @param username
-   */
-  // ユーザー名からユーザーIDを取得する
-  // private async getUseIdByName(username: string): Promise<string> {
-  //   if (username.startsWith('@')) {
-  //     // 最初の位置文字が「@」だったら削除する
-  //     username = username.slice(1)
-  //   }
-  //   const userProfile = await mmClient.getUserByUsername(username)
-  //   return userProfile.id
-  // }
 };
 
 // src/MattermostClient.ts
@@ -1056,7 +1055,8 @@ var AnthropicAdapter = class {
     const completion = await this.anthropic.messages.create(
       options
     );
-    return this.mapAnthropicMessageToOpenAICompletion(completion);
+    const response = this.mapAnthropicMessageToOpenAICompletion(completion);
+    return { response, images: [] };
   }
   mapAnthropicMessageToOpenAICompletion(completion) {
     const choices = [
@@ -1097,7 +1097,8 @@ var CohereAdapter = class extends AIAdapter {
   async createMessage(options) {
     const chat = await this.cohere.chat(this.createCohereRequest(options));
     log2.debug("Cohere chat() response: ", chat);
-    return this.createOpenAIChatCompletion(chat, options.model);
+    const response = this.createOpenAIChatCompletion(chat, options.model);
+    return { response, images: [] };
   }
   createOpenAIChatCompletion(chat, model) {
     const choices = [
@@ -1258,74 +1259,124 @@ var CohereAdapter = class extends AIAdapter {
 // src/adapters/GoogleGeminiAdapter.ts
 import {
   FinishReason,
-  GoogleGenerativeAI,
-  SchemaType
-} from "@google/generative-ai";
+  GoogleGenAI,
+  Modality,
+  Type
+} from "@google/genai";
 import { Log as Log4 } from "debug-level";
 Log4.options({ json: true, colors: true });
 var log3 = new Log4("Gemini");
 var GoogleGeminiAdapter = class extends AIAdapter {
-  generativeModel;
+  generativeModels;
   baseURL;
   MAX_TOKENS;
   temperature;
+  model;
   constructor(apiKey, model, MAX_TOKENS, temperature) {
     super();
     this.MAX_TOKENS = MAX_TOKENS;
     this.temperature = temperature;
-    const configuration = new GoogleGenerativeAI(apiKey);
-    this.generativeModel = configuration.getGenerativeModel(
-      {
-        model,
-        generationConfig: {
-          maxOutputTokens: this.MAX_TOKENS,
-          temperature: this.temperature
-          //topP, TopK
-        }
-      },
-      {
-        apiVersion: "v1beta"
-        //v1beta にしかtoolsが無い
-      }
-    );
-    this.baseURL = `https://generativelanguage.googleapis.com/v1/models/${model}:`;
+    this.model = model;
+    const ai = new GoogleGenAI({
+      apiKey
+      // httpOptions: { apiVersion: 'v1beta' }, //v1beta v1alpha
+    });
+    this.generativeModels = ai.models;
+    this.baseURL = `https://generativelanguage.googleapis.com/v1beta/models/${model}:`;
   }
+  // eslint-disable-next-line max-lines-per-function
   async createMessage(options) {
-    const systemInstruction = this.createContents([
-      options.messages.shift()
-    ])[0];
+    const systemInstruction = this.model.includes("image") ? void 0 : this.createContents([options.messages.shift()])[0];
     const currentMessages = this.createContents(options.messages);
     const tool = this.createGeminiTool(options.tools, options.functions);
     let tools = void 0;
     if (tool) {
       tools = [tool];
     }
+    if ([
+      // 関数未対応のモデル
+      "models/gemini-2.0-flash-preview-image-generation",
+      "gemini-2.0-flash-exp-image-generation",
+      "gemini-2.0-flash-preview-image-generation",
+      //
+      "models/gemini-2.0-flash-lite",
+      "gemini-2.0-flash-lite"
+    ].some((model) => this.model.includes(model))) {
+      tools = void 0;
+    }
     const request = {
+      model: this.model,
       // https://ai.google.dev/api/rest/v1/models/generateContent?hl=ja#request-body
       // https://ai.google.dev/api/rest/v1beta/models/generateContent?hl=ja
       contents: currentMessages,
       //safetySettings,
       //generationConfig,
-      systemInstruction,
-      tools
-      // v1betaより
-      //toolConfig?: ToolConfig;
+      config: {
+        systemInstruction,
+        maxOutputTokens: this.MAX_TOKENS,
+        temperature: this.temperature,
+        //topP, TopK
+        tools,
+        // v1betaより
+        //toolConfig?: ToolConfig;
+        responseModalities: this.model.includes("image") ? [Modality.IMAGE, Modality.TEXT] : [Modality.TEXT]
+        // だめ[Modality.MODALITY_UNSPECIFIED],
+        //なくてもIMAGEできる responseMimeType: 'text/plain',
+      }
     };
     log3.trace("request", JSON.parse(this.shortenLongString(JSON.stringify(request))));
-    const generateContentResponse = await this.generativeModel.generateContent(request);
-    log3.trace("generateContentResponse", generateContentResponse);
-    const { choices, tokenCount: tokenCount2 } = this.createChoices(generateContentResponse.response.candidates);
-    const usage = await this.getUsage(currentMessages, tokenCount2);
+    const generateContentResponse = await this.generativeModels.generateContent(request);
+    log3.trace("generateContentResponse", this.shortenResponse(generateContentResponse));
+    let usage;
+    const { choices, tokenCount: tokenCount2, images } = this.createChoices(generateContentResponse.candidates);
+    if (generateContentResponse.usageMetadata) {
+      usage = {
+        completion_tokens: generateContentResponse.usageMetadata.candidatesTokenCount || 0,
+        prompt_tokens: generateContentResponse.usageMetadata.promptTokenCount || tokenCount2,
+        // usageMetadata.promptTokenCountは無い時はtokenCountを使う
+        total_tokens: generateContentResponse.usageMetadata.totalTokenCount || 0
+        // completion_tokens_details?: CompletionUsage.CompletionTokensDetails || 0,
+        // prompt_tokens_details?: CompletionUsage.PromptTokensDetails || 0,
+      };
+    } else {
+      usage = await this.getUsage(currentMessages, tokenCount2);
+    }
     return {
-      id: "",
-      choices,
-      created: 0,
-      model: options.model,
-      system_fingerprint: "",
-      object: "chat.completion",
-      //OputAI固定値
-      usage
+      response: {
+        id: "",
+        choices,
+        created: 0,
+        model: options.model,
+        system_fingerprint: "",
+        object: "chat.completion",
+        //OpenAI固定値
+        usage
+      },
+      images
     };
+  }
+  // TRACE Gemini   "modelVersion": "gemini-2.0-flash-preview-image-generation",
+  // TRACE Gemini   "usageMetadata": {
+  // TRACE Gemini     "promptTokenCount": 62,
+  // TRACE Gemini     "candidatesTokenCount": 6,
+  // TRACE Gemini     "totalTokenCount": 68,
+  // TRACE Gemini     "promptTokensDetails": [
+  // TRACE Gemini       {
+  // TRACE Gemini         "modality": "TEXT",
+  // TRACE Gemini         "tokenCount": 62
+  // TRACE Gemini       }
+  // TRACE Gemini     ]
+  // TRACE Gemini   }
+  shortenResponse(generateContentResponse) {
+    const g = JSON.parse(JSON.stringify(generateContentResponse));
+    g.candidates?.forEach((candidate) => {
+      candidate.content?.parts?.forEach((part) => {
+        if (part.inlineData) {
+          part.inlineData.data = shortenString(part.inlineData.data) || "";
+        }
+      });
+    });
+    return JSON.stringify(g);
   }
   shortenLongString(str) {
     const regex = /"(.*?)"/g;
@@ -1340,16 +1391,19 @@ var GoogleGeminiAdapter = class extends AIAdapter {
   createChoices(candidates) {
     let tokenCount2 = 0;
     const choices = [];
+    const images = [];
     candidates?.forEach((candidate) => {
-      tokenCount2 += 0;
+      tokenCount2 += candidate.tokenCount ?? 0;
       let content = null;
       let toolCalls = void 0;
       if (candidate.finishReason !== FinishReason.STOP && candidate.finishReason !== FinishReason.MAX_TOKENS) {
-        log3.error(`Abnormal fihishReson ${candidate.finishReason}`);
+        log3.error(`Abnormal finishReason ${candidate.finishReason}`);
         return;
       }
-      candidate.content.parts.forEach((part) => {
+      candidate.content?.parts?.forEach((part) => {
+        let found = false;
         if (part.functionCall) {
+          found = true;
           if (!toolCalls) {
             toolCalls = [];
           }
@@ -1357,22 +1411,32 @@ var GoogleGeminiAdapter = class extends AIAdapter {
             id: "",
             type: "function",
             function: {
-              name: part.functionCall.name.replaceAll("_", "-"),
+              name: part.functionCall.name?.replaceAll("_", "-") || "name" + part.functionCall.id,
               //なぜか、pluginの名前の「-」が「_」になってしまう。
               arguments: JSON.stringify(part.functionCall.args)
             }
           });
-        } else if (part.text) {
+        }
+        if (part.text) {
+          found = true;
           if (!content) {
             content = "";
           }
           content += part.text;
-        } else {
+        }
+        if (part.inlineData) {
+          found = true;
+          const imageData = part.inlineData;
+          if (imageData) {
+            images.push(new Blob([Buffer.from(imageData.data || "", "base64")], { type: imageData.mimeType }));
+          }
+        }
+        if (!found) {
           log3.error(`Unexpected part`, part);
         }
       });
       choices.push({
-        index: candidate.index,
+        index: candidate.index || 0,
         finish_reason: "stop",
         //| 'length' | 'tool_calls' | 'content_filter' | 'function_call';
         logprobs: null,
@@ -1387,7 +1451,7 @@ var GoogleGeminiAdapter = class extends AIAdapter {
         }
       });
     });
-    return { choices, tokenCount: tokenCount2 };
+    return { choices, tokenCount: tokenCount2, images };
   }
   createGeminiTool(tools, functions) {
     tools = this.convertFunctionsToTools(functions, tools);
@@ -1432,19 +1496,19 @@ var GoogleGeminiAdapter = class extends AIAdapter {
     return geminiTool;
   }
   workaroundObjectNoParameters(parameters) {
-    if (parameters?.type === SchemaType.OBJECT && Object.keys(parameters?.properties).length === 0) {
+    if (parameters?.type === Type.OBJECT && Object.keys(parameters?.properties ?? []).length === 0) {
       parameters = void 0;
     }
     return parameters;
   }
   convertType(tool, parameters) {
     const typeMapping = {
-      object: SchemaType.OBJECT,
-      string: SchemaType.STRING,
-      number: SchemaType.NUMBER,
-      integer: SchemaType.INTEGER,
-      boolean: SchemaType.BOOLEAN,
-      array: SchemaType.ARRAY
+      object: Type.OBJECT,
+      string: Type.STRING,
+      number: Type.NUMBER,
+      integer: Type.INTEGER,
+      boolean: Type.BOOLEAN,
+      array: Type.ARRAY
     };
     const paramType = tool.function.parameters?.type;
     if (paramType && typeMapping[paramType]) {
@@ -1490,7 +1554,7 @@ var GoogleGeminiAdapter = class extends AIAdapter {
     return contents.map((message) => {
       const newMessage = {
         role: message.role,
-        parts: this.mapShotenInlineDataInParts(message.parts)
+        parts: this.mapShotenInlineDataInParts(message.parts ?? [])
       };
       return newMessage;
     });
@@ -1545,7 +1609,7 @@ var GoogleGeminiAdapter = class extends AIAdapter {
     let inputTokens = -1;
     let outputTokens = -1;
     try {
-      inputTokens = (await this.generativeModel.countTokens({ contents })).totalTokens;
+      inputTokens = (await this.generativeModels.countTokens({ model: this.model, contents })).totalTokens || 0;
       outputTokens = responseTokenCount;
     } catch (error) {
       if (error.message.indexOf("GoogleGenerativeAI Error") >= 0) {
@@ -1579,7 +1643,8 @@ var OpenAIAdapter = class {
   }
   async createMessage(options) {
     try {
-      return this.openai.chat.completions.create(options);
+      const response = await this.openai.chat.completions.create(options);
+      return { response, images: [] };
     } catch (error) {
       if (error instanceof OpenAI.APIError) {
         log4.error(`OpenAI API Error: ${error.status} ${error.name}`, error);
@@ -1601,11 +1666,12 @@ var OpenAIWrapper = class {
   MAX_TOKENS;
   TEMPERATURE;
   MAX_PROMPT_TOKENS;
+  REASONING_EFFORT;
   getMaxPromptTokens() {
     return this.MAX_PROMPT_TOKENS;
   }
   mattermostCLient;
-  getMattemostClient() {
+  getMattermostClient() {
     return this.mattermostCLient;
   }
   /**
@@ -1625,6 +1691,7 @@ var OpenAIWrapper = class {
     this.MAX_TOKENS = providerConfig.maxTokens ?? Number(yamlConfig.OPENAI_MAX_TOKENS ?? process.env["OPENAI_MAX_TOKENS"] ?? 2e3);
     this.TEMPERATURE = providerConfig.temperature ?? Number(yamlConfig.OPENAI_TEMPERATURE ?? process.env["OPENAI_TEMPERATURE"] ?? 1);
     this.MAX_PROMPT_TOKENS = providerConfig.maxPromptTokens ?? Number(yamlConfig.MAX_PROMPT_TOKENS ?? process.env["MAX_PROMPT_TOKENS"] ?? 2e3);
+    this.REASONING_EFFORT = providerConfig.reasoningEffort;
     this.name = providerConfig.name;
     if (!this.name) {
       openAILog.error("No name. Ignore provider config", providerConfig);
@@ -1853,16 +1920,31 @@ var OpenAIWrapper = class {
     const missingPlugins = /* @__PURE__ */ new Set();
     let isIntermediateResponse = true;
     while (isIntermediateResponse && maxChainLength-- > 0) {
-      const { responseMessage, finishReason, usage, model } = await this.createChatCompletion(messages, this.functions);
-      if (responseMessage) {
-        aiResponse.model += model + " ";
-        if (usage && aiResponse.usage) {
-          aiResponse.usage.prompt_tokens += usage.prompt_tokens;
-          aiResponse.usage.prompt_tokens_details.cached_tokens += usage?.prompt_tokens_details?.cached_tokens ? usage.prompt_tokens_details.cached_tokens : 0;
-          aiResponse.usage.completion_tokens += usage.completion_tokens;
-          aiResponse.usage.completion_tokens_details.reasoning_tokens += usage?.completion_tokens_details?.reasoning_tokens ? usage.completion_tokens_details.reasoning_tokens : 0;
-          aiResponse.usage.total_tokens += usage.total_tokens;
+      const { responseMessage, finishReason, usage, model, images } = await this.createChatCompletion(
+        messages,
+        this.functions
+      );
+      this.makeModelAndUsage(aiResponse, model, usage);
+      if (images) {
+        openAILog.debug("Image files: ", images.length);
+        for (const image of images) {
+          const form = new FormData();
+          form.append("channel_id", msgData.post.channel_id);
+          form.append("files", image, "image.png");
+          const response = await this.getMattermostClient().getClient().uploadFile(form);
+          openAILog.trace("Uploaded a file with id", response.file_infos[0].id);
+          const fileId = response.file_infos[0].id;
+          aiResponse.message = "";
+          aiResponse.props = {
+            originalMessage: ""
+          };
+          if (!aiResponse.fileId) {
+            aiResponse.fileId = [];
+          }
+          aiResponse.fileId.push(fileId);
         }
+      }
+      if (responseMessage) {
         if (responseMessage.function_call) {
           if (!responseMessage.tool_calls) {
             responseMessage.tool_calls = [];
@@ -1943,6 +2025,16 @@ var OpenAIWrapper = class {
     }
     return aiResponse;
   }
+  makeModelAndUsage(aiResponse, model, usage) {
+    aiResponse.model += model + " ";
+    if (usage && aiResponse.usage) {
+      aiResponse.usage.prompt_tokens += usage.prompt_tokens;
+      aiResponse.usage.prompt_tokens_details.cached_tokens += usage?.prompt_tokens_details?.cached_tokens ? usage.prompt_tokens_details.cached_tokens : 0;
+      aiResponse.usage.completion_tokens += usage.completion_tokens;
+      aiResponse.usage.completion_tokens_details.reasoning_tokens += usage?.completion_tokens_details?.reasoning_tokens ? usage.completion_tokens_details.reasoning_tokens : 0;
+      aiResponse.usage.total_tokens += usage.total_tokens;
+    }
+  }
   /**
    * Logs the provided messages array after serializing and shortening long image URLs.
    *
@@ -1999,8 +2091,11 @@ var OpenAIWrapper = class {
       messages,
       temperature: this.TEMPERATURE
     };
-    if (currentModel.indexOf("o1") === 0 || currentModel.startsWith("o3")) {
+    if (currentModel.startsWith("o1") || currentModel.startsWith("o3")) {
       chatCompletionOptions.max_completion_tokens = this.MAX_TOKENS;
+      if (this.REASONING_EFFORT) {
+        chatCompletionOptions.reasoning_effort = this.REASONING_EFFORT;
+      }
     } else {
       chatCompletionOptions.max_tokens = this.MAX_TOKENS;
     }
@@ -2014,13 +2109,15 @@ var OpenAIWrapper = class {
       }
     }
     this.logChatCompletionsCreateParameters(chatCompletionOptions);
-    const chatCompletion = await currentOpenAi.createMessage(chatCompletionOptions);
+    const ret = await currentOpenAi.createMessage(chatCompletionOptions);
+    const chatCompletion = ret.response;
     openAILog.trace({ chatCompletion });
     return {
       responseMessage: chatCompletion.choices?.[0]?.message,
       usage: chatCompletion.usage,
       model: chatCompletion.model,
-      finishReason: chatCompletion.choices?.[0]?.finish_reason
+      finishReason: chatCompletion.choices?.[0]?.finish_reason,
+      images: ret.images
     };
   }
   /**
@@ -2081,15 +2178,15 @@ var OpenAIWrapper = class {
     } else {
       image = await currentProvider.imageProvider.imagesGenerate(createImageOptions);
     }
-    const dataTmp = image.data[0]?.b64_json;
+    const dataTmp = image.data?.[0]?.b64_json;
     if (dataTmp) {
-      image.data[0].b64_json = shortenString(image.data[0].b64_json);
+      image.data[0].b64_json = shortenString(dataTmp);
     }
     openAILog.trace("images.generate", { image });
     if (dataTmp) {
       image.data[0].b64_json = dataTmp;
     }
-    return image.data[0]?.b64_json;
+    return image.data?.[0]?.b64_json;
   }
 };
 

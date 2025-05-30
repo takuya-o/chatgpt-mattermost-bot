@@ -5,6 +5,7 @@ docker-compose.override.yml
 
 !.env-sample
 .env*
+.*.env
 !config-sample.yaml
 config*.yaml
 # envFileを使えは問題なし /.vscode/launch.json

@@ -27,18 +27,20 @@ bots:
     mattermostToken: 'your-mattermost-token'
     type: 'azure'
     apiKey: 'your-azure-openai-api-key'
-    apiVersion: '2024-10-21'
+    apiVersion: '2025-01-01-preview'
     instanceName: 'your-azure-instance-name'
-    deploymentName: 'gpt-4o-mini'
+    deploymentName: 'o3-mini'
     visionKey: 'your-azure-openai-vision-key'
     visionInstanceName: 'your-azure-vision-instance-name'
     visionDeploymentName: 'gpt-4v'
+    reasoningEffort: 'high' # 'high',  (default)'medium', 'low'
+    # temperature: 1 # o3-mini not support temperature
     imageKey: 'your-azure-openai-image-key'
     imageInstanceName: 'your-azure-image-instance-name'
     imageDeploymentName: 'dall-e-3'
-    maxTokens: 16384
+    maxTokens: 100000
     temperature: 1
-    maxPromptTokens: 123904
+    maxPromptTokens: 111000
     plugins: 'image-plugin'
   - name: '@Gemini'
     mattermostUrl: 'https://your-mattermost-url.example.com'

@@ -16,11 +16,12 @@ export class AnthropicAdapter implements AIProvider {
 
   async createMessage(
     options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
-  ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+  ): Promise<{ response: OpenAI.Chat.Completions.ChatCompletion; images: Blob[] }> {
     const completion = await this.anthropic.messages.create(
       options as unknown as Anthropic.Messages.MessageCreateParamsNonStreaming,
     )
-    return this.mapAnthropicMessageToOpenAICompletion(completion)
+    const response = this.mapAnthropicMessageToOpenAICompletion(completion)
+    return { response, images: [] }
   }
   private mapAnthropicMessageToOpenAICompletion(
     completion: Anthropic.Messages.Message,

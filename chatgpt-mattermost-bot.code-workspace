@@ -14,8 +14,36 @@
         "name": "v3テスト",
         "type": "node",
         "request": "launch",
-        "envFile": "${workspaceFolder}/.env.debug",
+        "envFile": "${workspaceFolder}/.debug.env",
         //"envFile": "${workspaceFolder}/.env",
+        // Debug current file in VSCode
+        "program": "${workspaceFolder}/src/MultiInstance.ts", //"${file}",
+        //"stopOnEntry": true,
+        /*
+        Path to tsx binary
+        Assuming locally installed
+        */
+        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/tsx",
+        /*
+        Open terminal when debugging starts (Optional)
+        Useful to see console.logs
+        */
+        "console": "integratedTerminal",
+        "internalConsoleOptions": "neverOpen", //デバッグ セッション中の [デバッグ コンソール] パネルの表示/非表示を制御
+        //"outputCapture": "std", //LogがDEBUG CONSOLEに出る
+        // Files to exclude from debugger (e.g. call stack)
+        "skipFiles": [
+          // Node.js internal core modules
+          "<node_internals>/**",
+          // Ignore all dependencies (optional)
+          "${workspaceFolder}/node_modules/**",
+        ],
+      },
+      {  // https://www.npmjs.com/package/tsx#debugging-method-1-run-tsx-directly-from-vscode
+        "name": "v3テスト(gemini)",
+        "type": "node",
+        "request": "launch",
+        "envFile": "${workspaceFolder}/.debug-gemini.env",
         // Debug current file in VSCode
         "program": "${workspaceFolder}/src/MultiInstance.ts", //"${file}",
         //"stopOnEntry": true,
@@ -241,8 +269,8 @@
     "recommendations": [
       "dbaeumer.vscode-eslint",
       "esbenp.prettier-vscode",
-            "taichi.vscode-textlint",
-            "ms-azuretools.vscode-docker"
+            "ms-azuretools.vscode-docker",
+            "3w36zj6.textlint"
     ]
   }
 }

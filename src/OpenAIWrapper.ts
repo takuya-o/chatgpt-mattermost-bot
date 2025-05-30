@@ -19,12 +19,13 @@ export class OpenAIWrapper {
   private MAX_TOKENS: number
   private TEMPERATURE: number
   private MAX_PROMPT_TOKENS: number
+  private REASONING_EFFORT: OpenAI.Chat.Completions.ChatCompletionReasoningEffort | undefined
   public getMaxPromptTokens() {
     return this.MAX_PROMPT_TOKENS
   }
 
   private mattermostCLient: MattermostClient
-  public getMattemostClient() {
+  public getMattermostClient() {
     return this.mattermostCLient
   }
 
@@ -42,13 +43,14 @@ export class OpenAIWrapper {
   // eslint-disable-next-line max-lines-per-function
   constructor(providerConfig: ProviderConfig, mattermostClient: MattermostClient) {
     this.mattermostCLient = mattermostClient
-    const yamlConfig = getConfig()
+    const yamlConfig = getConfig() // 全体設定のために再びファイルを読んでいる
     this.MAX_TOKENS =
       providerConfig.maxTokens ?? Number(yamlConfig.OPENAI_MAX_TOKENS ?? process.env['OPENAI_MAX_TOKENS'] ?? 2000)
     this.TEMPERATURE =
       providerConfig.temperature ?? Number(yamlConfig.OPENAI_TEMPERATURE ?? process.env['OPENAI_TEMPERATURE'] ?? 1)
     this.MAX_PROMPT_TOKENS =
       providerConfig.maxPromptTokens ?? Number(yamlConfig.MAX_PROMPT_TOKENS ?? process.env['MAX_PROMPT_TOKENS'] ?? 2000)
+    this.REASONING_EFFORT = providerConfig.reasoningEffort // 新機能なので全体設定や環境変数設定は無し values are low, medium, and high
 
     this.name = providerConfig.name
     // name重複チェックはnewされる前にしている
@@ -314,22 +316,35 @@ export class OpenAIWrapper {
 
     let isIntermediateResponse = true
     while (isIntermediateResponse && maxChainLength-- > 0) {
-      const { responseMessage, finishReason, usage, model } = await this.createChatCompletion(messages, this.functions)
+      const { responseMessage, finishReason, usage, model, images } = await this.createChatCompletion(
+        messages,
+        this.functions,
+      )
       //chatCompletion.choices?.[0]?.messageで同じログが出ている log.trace("responseMessage: ", responseMessage)
-      if (responseMessage) {
-        aiResponse.model += model + ' '
-        if (usage && aiResponse.usage) {
-          aiResponse.usage.prompt_tokens += usage.prompt_tokens
-          aiResponse.usage.prompt_tokens_details!.cached_tokens! += usage?.prompt_tokens_details?.cached_tokens
-            ? usage.prompt_tokens_details.cached_tokens
-            : 0
-          aiResponse.usage.completion_tokens += usage.completion_tokens
-          aiResponse.usage.completion_tokens_details!.reasoning_tokens! += usage?.completion_tokens_details
-            ?.reasoning_tokens
-            ? usage.completion_tokens_details.reasoning_tokens
-            : 0
-          aiResponse.usage.total_tokens += usage.total_tokens
+      this.makeModelAndUsage(aiResponse, model, usage)
+      if (images) {
+        log.debug('Image files: ', images.length)
+        for (const image of images) {
+          const form = new FormData()
+          form.append('channel_id', msgData.post.channel_id)
+          form.append('files', image, 'image.png')
+          // // imageはBASE64文字列なのでデコードしてバイナリデータに変換する
+          // const binary = Buffer.from(image, 'base64')
+          // form.append('files', new Blob([binary], { type: 'image/png' }), 'image.png')
+          const response = await this.getMattermostClient().getClient().uploadFile(form)
+          log.trace('Uploaded a file with id', response.file_infos[0].id)
+          const fileId = response.file_infos[0].id
+          aiResponse.message = ''
+          aiResponse.props = {
+            originalMessage: '',
+          }
+          if (!aiResponse.fileId) {
+            aiResponse.fileId = []
+          }
+          aiResponse.fileId.push(fileId) // mattermostのFileIDでファイルをリターン
         }
+      }
+      if (responseMessage) {
         // function_callは古い 新しいのは tools_calls[].functionなので、そちらにする
         if (responseMessage.function_call) {
           if (!responseMessage.tool_calls) {
@@ -408,12 +423,32 @@ export class OpenAIWrapper {
             continue
           }
         }
-      }
+      } //
 
       isIntermediateResponse = false
     }
 
     return aiResponse
+  }
+
+  private makeModelAndUsage(
+    aiResponse: AiResponse,
+    model: string,
+    usage: OpenAI.Completions.CompletionUsage | undefined,
+  ) {
+    aiResponse.model += model + ' '
+    if (usage && aiResponse.usage) {
+      aiResponse.usage.prompt_tokens += usage.prompt_tokens
+      aiResponse.usage.prompt_tokens_details!.cached_tokens! += usage?.prompt_tokens_details?.cached_tokens
+        ? usage.prompt_tokens_details.cached_tokens
+        : 0
+      aiResponse.usage.completion_tokens += usage.completion_tokens
+      aiResponse.usage.completion_tokens_details!.reasoning_tokens! += usage?.completion_tokens_details
+        ?.reasoning_tokens
+        ? usage.completion_tokens_details.reasoning_tokens
+        : 0
+      aiResponse.usage.total_tokens += usage.total_tokens
+    }
   }
 
   /**
@@ -456,6 +491,7 @@ export class OpenAIWrapper {
     usage: OpenAI.CompletionUsage | undefined
     model: string
     finishReason: 'function_call' | 'tool_calls' | 'length' | 'stop' | 'content_filter'
+    images: Blob[]
   }> {
     //gpt-4-vision-preview への切り替え
     let useTools = true
@@ -488,8 +524,11 @@ export class OpenAIWrapper {
       temperature: this.TEMPERATURE,
     }
     //TODO: messageのTOKEN数から最大値にする。レスポンス長くなるけど翻訳などが一発になる
-    if (currentModel.indexOf('o1') === 0 || currentModel.startsWith('o3')) {
+    if (currentModel.startsWith('o1') || currentModel.startsWith('o3')) {
       chatCompletionOptions.max_completion_tokens = this.MAX_TOKENS
+      if (this.REASONING_EFFORT) {
+        chatCompletionOptions.reasoning_effort = this.REASONING_EFFORT
+      }
     } else {
       // gpt-4o では、こちらでないとエラー
       chatCompletionOptions.max_tokens = this.MAX_TOKENS
@@ -506,13 +545,15 @@ export class OpenAIWrapper {
       }
     }
     this.logChatCompletionsCreateParameters(chatCompletionOptions)
-    const chatCompletion = await currentOpenAi.createMessage(chatCompletionOptions)
+    const ret = await currentOpenAi.createMessage(chatCompletionOptions)
+    const chatCompletion = ret.response
     log.trace({ chatCompletion })
     return {
       responseMessage: chatCompletion.choices?.[0]?.message,
       usage: chatCompletion.usage,
       model: chatCompletion.model,
       finishReason: chatCompletion.choices?.[0]?.finish_reason,
+      images: ret.images,
     }
   }
 
@@ -579,14 +620,14 @@ export class OpenAIWrapper {
       // AzureはDALL-E2の場合の非同期の特別な対応をしていた
       image = await currentProvider.imageProvider.imagesGenerate(createImageOptions)
     }
-    const dataTmp = image.data[0]?.b64_json
+    const dataTmp = image.data?.[0]?.b64_json
     if (dataTmp) {
-      image.data[0].b64_json = shortenString(image.data[0].b64_json)
+      image.data![0].b64_json = shortenString(dataTmp)
     }
     log.trace('images.generate', { image })
     if (dataTmp) {
-      image.data[0].b64_json = dataTmp
+      image.data![0].b64_json = dataTmp
     }
-    return image.data[0]?.b64_json // TODO revised_promptの利用
+    return image.data?.[0]?.b64_json // TODO revised_promptの利用
   }
 }

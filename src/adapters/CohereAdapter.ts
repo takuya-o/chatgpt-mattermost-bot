@@ -21,12 +21,13 @@ export class CohereAdapter extends AIAdapter implements AIProvider {
 
   async createMessage(
     options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
-  ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+  ): Promise<{ response: OpenAI.Chat.Completions.ChatCompletion; images: Blob[] }> {
     // https://docs.cohere.com/reference/chat
     // まだ messageやhistoryは、stringのみ  Toolsはあるけど。
     const chat = await this.cohere.chat(this.createCohereRequest(options))
     log.debug('Cohere chat() response: ', chat)
-    return this.createOpenAIChatCompletion(chat, options.model)
+    const response = this.createOpenAIChatCompletion(chat, options.model)
+    return { response, images: [] }
   }
 
   private createOpenAIChatCompletion(

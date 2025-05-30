@@ -2,6 +2,9 @@ import { ProviderConfig } from './types'
 import fs from 'fs'
 import yaml from 'js-yaml'
 
+// TODO: クラス化
+// TODO: 読み込んだファイルのキャッシュ化
+
 export function getConfig() {
   const configFileName = process.env.CONFIG_FILE || './config.yaml'
   // ファイルが存在するか確認し、存在しない場合は空のRecordを返す
@@ -34,6 +37,7 @@ export function getAIProvidersConfig() {
     imageKey: bot.imageKey,
     imageInstanceName: bot.imageInstanceName,
     imageDeploymentName: bot.imageDeploymentName,
+    reasoningEffort: bot.reasoningEffort,
   }))
   return providers
 }

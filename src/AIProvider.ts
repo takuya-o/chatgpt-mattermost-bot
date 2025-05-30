@@ -8,7 +8,7 @@ export interface AIProvider {
   baseURL: string
   createMessage(
     options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
-  ): Promise<OpenAI.Chat.Completions.ChatCompletion>
+  ): Promise<{ response: OpenAI.Chat.Completions.ChatCompletion; images: Blob[] }>
   imagesGenerate(imageGeneratePrams: OpenAI.Images.ImageGenerateParams): Promise<OpenAI.Images.ImagesResponse>
 }
 

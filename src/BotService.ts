@@ -39,7 +39,7 @@ const additionalBotInstructions =
 
 export class BotService {
   private mattermostClient: MattermostClient
-  private meId: string
+  private meId: string // ex. @ChatGPTのID
   private name: string // ex. @ChatGPT
   private openAIWrapper: OpenAIWrapper
 
@@ -122,74 +122,90 @@ export class BotService {
     unuseImages: boolean,
   ) {
     for (const threadPost of posts) {
+      let role: never = 'user' as never // ChatCompletionRequestMessageRoleEnum.User
+      let message = threadPost.message
       if (threadPost.user_id === this.meId) {
         // bot自身のメッセージなのでassitantに入れる
-        // assitant は content: string | null でArrayはないので画像は取り込めない
+        // assitant は content: に画像は取り込めない
+        role = 'assistant' as never
+        if (threadPost.props.originalMessage) {
+          message = threadPost.props.originalMessage as string
+        }
+      }
+      // Mattermost スレッドに画像の有無で処理が変わる
+      // .metadata.files[] extension mime_type id height width  mini_preview=JPEG16x16
+      if (
+        !unuseImages &&
+        (threadPost.metadata.files?.length > 0 || threadPost.metadata.images || threadPost.metadata.embeds)
+      ) {
+        // 画像つきのPost TODO: すべての過去画像を入れるのか?
+        role = 'user' as never // 画像つきのPostはuserにするしかないのでbotでも強制上書き
+        // textとimage_urlの配列を準備
+        const content: Array<OpenAI.Chat.ChatCompletionContentPart> = [{ type: 'text', text: message }]
+        // Mattermost内部の画像
+        if (threadPost.metadata.files) {
+          await Promise.all(
+            threadPost.metadata.files.map(async file => {
+              //const url = (await mmClient.getFilePublicLink(file.id)).link
+              const originalUrl = await this.mattermostClient.getClient().getFileUrl(file.id, NaN) //これではOpenAIから見えない
+              // urlの画像を取得してBASE64エンコードされたURLにする
+              const url = await this.getBase64Image(
+                originalUrl,
+                this.mattermostClient.getClient().getToken(),
+                file.mime_type,
+                file.width,
+                file.height,
+              )
+              if (url) {
+                content.push(
+                  { type: 'image_url', image_url: { url } }, //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
+                )
+              } //画像取得が失敗した場合は無視
+            }),
+          )
+        }
+        // メッセージにURLを埋め込んだ内部画像URL
+        if (threadPost.metadata.embeds) {
+          for (const embed of threadPost.metadata.embeds) {
+            if (embed.url && embed.type === 'link') {
+              const url = await this.getBase64Image(embed.url, this.mattermostClient.getClient().getToken())
+              if (url) {
+                content.push({ type: 'image_url', image_url: { url } })
+              }
+            } else {
+              botLog.warn(`Unsupported embed type: ${embed.type}. Skipping.`, embed)
+            }
+          }
+        }
+        // 外部画像URL
+        if (threadPost.metadata.images) {
+          await Promise.all(
+            Object.keys(threadPost.metadata.images).map(async url => {
+              const postImage = threadPost.metadata.images[url]
+              // GPT-4Vの解釈できてリーズナブルな画像形式とサイズに変換
+              url = await this.getBase64Image(
+                url,
+                this.mattermostClient.getClient().getToken(),
+                postImage.format,
+                postImage.width,
+                postImage.height,
+              ) // 元のURLもMattermostのURL
+              content.push({ type: 'image_url', image_url: { url } })
+            }),
+          )
+        }
         chatmessages.push({
-          role: 'assistant' as never,
+          role,
           name: await this.userIdToName(threadPost.user_id),
-          // contentをstring型にキャスト
-          content: (threadPost.props.originalMessage as string) ?? threadPost.message,
+          content,
         })
       } else {
-        // Mattermost スレッドに画像の有無で処理が変わる
-        // .metadata.files[] extension mime_type id height width  mini_preview=JPEG16x16
-        if (!unuseImages && (threadPost.metadata.files?.length > 0 || threadPost.metadata.images)) {
-          // 画像つきのPost TODO: すべての過去画像を入れるのか?
-          // textとimage_urlの配列を準備
-          const content: Array<OpenAI.Chat.ChatCompletionContentPart> = [{ type: 'text', text: threadPost.message }]
-          if (threadPost.metadata.files) {
-            // Mattermost内部の画像
-            await Promise.all(
-              threadPost.metadata.files.map(async file => {
-                //const url = (await mmClient.getFilePublicLink(file.id)).link
-                const originalUrl = await this.mattermostClient.getClient().getFileUrl(file.id, NaN) //これではOpenAIから見えない
-                // urlの画像を取得してBASE64エンコードされたURLにする
-                const url = await this.getBase64Image(
-                  originalUrl,
-                  this.mattermostClient.getClient().getToken(),
-                  file.mime_type,
-                  file.width,
-                  file.height,
-                )
-                if (url) {
-                  content.push(
-                    { type: 'image_url', image_url: { url } }, //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
-                  )
-                } //画像取得が失敗した場合は無視
-              }),
-            )
-          }
-          // 外部画像URL
-          if (threadPost.metadata.images) {
-            await Promise.all(
-              Object.keys(threadPost.metadata.images).map(async url => {
-                const postImage = threadPost.metadata.images[url]
-                // GPT-4Vの解釈できてリーズナブルな画像形式とサイズに変換
-                url = await this.getBase64Image(
-                  url,
-                  this.mattermostClient.getClient().getToken(),
-                  postImage.format,
-                  postImage.width,
-                  postImage.height,
-                ) // 元のURLもMattermostのURL
-                content.push({ type: 'image_url', image_url: { url } })
-              }),
-            )
-          }
-          chatmessages.push({
-            role: 'user' as never,
-            name: await this.userIdToName(threadPost.user_id),
-            content,
-          })
-        } else {
-          // テキストだけのPost
-          chatmessages.push({
-            role: 'user' as never,
-            name: await this.userIdToName(threadPost.user_id),
-            content: threadPost.message,
-          })
-        }
+        // テキストだけのPost
+        chatmessages.push({
+          role,
+          name: await this.userIdToName(threadPost.user_id),
+          content: message,
+        })
       }
     }
   }
@@ -225,10 +241,10 @@ export class BotService {
       return { ok: false } as Response
     })
     if (!response.ok) {
-      botLog.error(`Fech Image URL HTTP error! status: ${response?.status}`)
+      botLog.error(`Fetch Image URL HTTP error! status: ${response?.status}`)
       return ''
     }
-    let buffer = Buffer.from(await response.arrayBuffer())
+    let buffer = Buffer.from((await response.arrayBuffer()) as ArrayBufferLike)
     if (
       !format ||
       (['png', 'jpeg', 'webp', 'gif'].includes(format.replace(/^.+\//, '')) && (width <= 0 || height <= 0))
@@ -468,18 +484,4 @@ export class BotService {
 
     return username
   }
-
-  /**
-   * Looks up the mattermost userId for the given username.
-   * @param username
-   */
-  // ユーザー名からユーザーIDを取得する
-  // private async getUseIdByName(username: string): Promise<string> {
-  //   if (username.startsWith('@')) {
-  //     // 最初の位置文字が「@」だったら削除する
-  //     username = username.slice(1)
-  //   }
-  //   const userProfile = await mmClient.getUserByUsername(username)
-  //   return userProfile.id
-  // }
 }

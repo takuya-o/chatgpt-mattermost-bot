@@ -71,7 +71,7 @@ export class GraphPlugin extends PluginBase<GraphPluginArgs> {
       return await this.processGraphResponse(
         response.responseMessage.content,
         msgData.post.channel_id,
-        openAIWrapper.getMattemostClient().getClient(),
+        openAIWrapper.getMattermostClient().getClient(),
       )
     }
 
@@ -108,7 +108,7 @@ export class GraphPlugin extends PluginBase<GraphPluginArgs> {
 
         result.props = { originalMessage: content }
 
-        result.fileId = fileId
+        result.fileId = [fileId]
       } catch (e) {
         this.log.error(e)
         this.log.error(`The input was:\n\n${graphContent}`)

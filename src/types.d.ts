@@ -17,7 +17,7 @@ export type AiResponse = {
   message: string //ChatCompletionのレスポンスのcontentは未だStringのみ
   usage?: OpenAI.CompletionUsage
   props?: Record<string, string>
-  fileId?: string // 添付画像 mattermostファイルID
+  fileId?: string[] // 添付画像 mattermostファイルID
   intermediate?: boolean
   model?: string
 }
@@ -44,6 +44,7 @@ export type ProviderConfig = {
   maxTokens: number
   temperature: number
   maxPromptTokens: number
+  reasoningEffort: OpenAI.Chat.Completions.ChatCompletionReasoningEffort | undefined
   plugins: string
 }
 

@@ -1,18 +1,19 @@
 import { AIAdapter, AIProvider, shortenString } from '../AIProvider.js'
 import {
+  Candidate,
   Content,
   FinishReason,
   FunctionDeclaration,
-  FunctionDeclarationSchema,
-  FunctionDeclarationSchemaProperty,
-  GenerateContentCandidate,
-  GenerateContentRequest,
-  GenerativeModel,
-  GoogleGenerativeAI,
+  GenerateContentParameters,
+  GenerateContentResponse,
+  GoogleGenAI,
+  Modality,
+  Models,
   Part,
-  SchemaType,
+  Schema,
   Tool,
-} from '@google/generative-ai'
+  Type,
+} from '@google/genai'
 import { Log } from 'debug-level'
 import OpenAI from 'openai'
 
@@ -24,79 +25,135 @@ const log = new Log('Gemini')
  * See: https://blog.gopenai.com/how-to-use-google-gemini-with-node-js-and-typescript-393cde945eab
  */
 export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
-  private generativeModel: GenerativeModel
+  private generativeModels: Models
   public baseURL: string
   private MAX_TOKENS: number
   private temperature: number
+  private model: string
 
   constructor(apiKey: string, model: string, MAX_TOKENS: number, temperature: number) {
     super()
     this.MAX_TOKENS = MAX_TOKENS
     this.temperature = temperature
+    this.model = model
     // GoogleGenerativeAI required config
-    const configuration = new GoogleGenerativeAI(apiKey)
-    this.generativeModel = configuration.getGenerativeModel(
-      {
-        model,
-        generationConfig: {
-          maxOutputTokens: this.MAX_TOKENS,
-          temperature: this.temperature,
-          //topP, TopK
-        },
-      },
-      {
-        apiVersion: 'v1beta', //v1beta にしかtoolsが無い
-      },
-    )
-    this.baseURL = `https://generativelanguage.googleapis.com/v1/models/${model}:`
+    const ai = new GoogleGenAI({
+      apiKey,
+      // httpOptions: { apiVersion: 'v1beta' }, //v1beta v1alpha
+    })
+    this.generativeModels = ai.models
+    this.baseURL = `https://generativelanguage.googleapis.com/v1beta/models/${model}:`
   }
 
+  // eslint-disable-next-line max-lines-per-function
   async createMessage(
     options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
-  ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+  ): Promise<{ response: OpenAI.Chat.Completions.ChatCompletion; images: Blob[] }> {
     //These arrays are to maintain the history of the conversation
-    const systemInstruction = this.createContents([
-      options.messages.shift() as OpenAI.Chat.Completions.ChatCompletionMessageParam,
-    ])[0]
+    const systemInstruction = this.model.includes('image')
+      ? undefined // gemini-2.0-flash-preview-image-generation でシステムインストラクションを入れるとDeveloper instruction is not enabled エラー
+      : this.createContents([options.messages.shift() as OpenAI.Chat.Completions.ChatCompletionMessageParam])[0]
     const currentMessages: Content[] = this.createContents(options.messages)
     const tool: Tool | undefined = this.createGeminiTool(options.tools, options.functions)
     let tools: Tool[] | undefined = undefined
     if (tool) {
       tools = [tool]
     }
+    if (
+      [
+        // 関数未対応のモデル
+        'models/gemini-2.0-flash-preview-image-generation',
+        'gemini-2.0-flash-exp-image-generation',
+        'gemini-2.0-flash-preview-image-generation',
+        //
+        'models/gemini-2.0-flash-lite',
+        'gemini-2.0-flash-lite',
+      ].some(model => this.model.includes(model))
+    ) {
+      tools = undefined
+    }
     // const chat = this.generativeModel
     //   .startChat({
     //     history: currentMessages,
     //   })
     // const generateContentResult = await chat.sendMessage(prompt)
-    const request: GenerateContentRequest = {
+    const request: GenerateContentParameters = {
+      model: this.model,
       // https://ai.google.dev/api/rest/v1/models/generateContent?hl=ja#request-body
       // https://ai.google.dev/api/rest/v1beta/models/generateContent?hl=ja
       contents: currentMessages,
       //safetySettings,
       //generationConfig,
-      systemInstruction,
-      tools, // v1betaより
-      //toolConfig?: ToolConfig;
+      config: {
+        systemInstruction,
+        maxOutputTokens: this.MAX_TOKENS,
+        temperature: this.temperature,
+        //topP, TopK
+        tools, // v1betaより
+        //toolConfig?: ToolConfig;
+        responseModalities: this.model.includes('image') ? [Modality.IMAGE, Modality.TEXT] : [Modality.TEXT], // だめ[Modality.MODALITY_UNSPECIFIED],
+        //なくてもIMAGEできる responseMimeType: 'text/plain',
+      },
     }
     log.trace('request', JSON.parse(this.shortenLongString(JSON.stringify(request)))) // JSON.parse()の例外のリスク
-    const generateContentResponse = await this.generativeModel.generateContent(request)
-    log.trace('generateContentResponse', generateContentResponse)
+    const generateContentResponse = await this.generativeModels.generateContent(request)
+    log.trace('generateContentResponse', this.shortenResponse(generateContentResponse))
+    let usage: OpenAI.Completions.CompletionUsage
 
     //レスポンスメッセージの詰替え
-    const { choices, tokenCount } = this.createChoices(generateContentResponse.response.candidates)
-    const usage = await this.getUsage(currentMessages, tokenCount)
-
+    const { choices, tokenCount, images } = this.createChoices(generateContentResponse.candidates)
+    if (generateContentResponse.usageMetadata) {
+      usage = {
+        completion_tokens: generateContentResponse.usageMetadata.candidatesTokenCount || 0,
+        prompt_tokens: generateContentResponse.usageMetadata.promptTokenCount || tokenCount, // usageMetadata.promptTokenCountは無い時はtokenCountを使う
+        total_tokens: generateContentResponse.usageMetadata.totalTokenCount || 0,
+        // completion_tokens_details?: CompletionUsage.CompletionTokensDetails || 0,
+        // prompt_tokens_details?: CompletionUsage.PromptTokensDetails || 0,
+      }
+    } else {
+      // usageMetadataはないので、トークン数を算出する
+      usage = await this.getUsage(currentMessages, tokenCount)
+    }
     return {
-      id: '',
-      choices,
-      created: 0,
-      model: options.model,
-      system_fingerprint: '',
-      object: 'chat.completion', //OputAI固定値
-      usage,
+      response: {
+        id: '',
+        choices,
+        created: 0,
+        model: options.model,
+        system_fingerprint: '',
+        object: 'chat.completion', //OpenAI固定値
+        usage,
+      },
+      images,
     }
   }
+  // TRACE Gemini   "modelVersion": "gemini-2.0-flash-preview-image-generation",
+  // TRACE Gemini   "usageMetadata": {
+  // TRACE Gemini     "promptTokenCount": 62,
+  // TRACE Gemini     "candidatesTokenCount": 6,
+  // TRACE Gemini     "totalTokenCount": 68,
+  // TRACE Gemini     "promptTokensDetails": [
+  // TRACE Gemini       {
+  // TRACE Gemini         "modality": "TEXT",
+  // TRACE Gemini         "tokenCount": 62
+  // TRACE Gemini       }
+  // TRACE Gemini     ]
+  // TRACE Gemini   }
+
+  private shortenResponse(generateContentResponse: GenerateContentResponse) {
+    // generateContentResponseのディープコピーを作る
+    const g: GenerateContentResponse = JSON.parse(JSON.stringify(generateContentResponse))
+    // 画像データ部分を短くする
+    g.candidates?.forEach((candidate: Candidate) => {
+      candidate.content?.parts?.forEach((part: Part) => {
+        if (part.inlineData) {
+          part.inlineData.data = shortenString(part.inlineData.data) || ''
+        }
+      })
+    })
+    return JSON.stringify(g)
+  }
+
   private shortenLongString(str: string) {
     // ""で囲まれた1024文字以上を切り詰める
     const regex = /"(.*?)"/g
@@ -108,7 +165,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       }
     })
   }
-  private createChoices(candidates: GenerateContentCandidate[] | undefined) {
+  private createChoices(candidates: Candidate[] | undefined) {
     //レスポンスメッセージの詰替え
     // OpenAI のレスポンスメッセージは "choices": [{
     //   "index": 0,
@@ -118,18 +175,21 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
     //   },
     let tokenCount = 0
     const choices: OpenAI.Chat.Completions.ChatCompletion.Choice[] = []
+    const images: Blob[] = []
     candidates?.forEach(candidate => {
-      tokenCount += 0 //candidate.tokenCount //TODO: まだ.d.tsにない
+      tokenCount += candidate.tokenCount ?? 0
       let content: string | null = null
       let toolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] | undefined = undefined
 
       if (candidate.finishReason !== FinishReason.STOP && candidate.finishReason !== FinishReason.MAX_TOKENS) {
-        log.error(`Abnormal fihishReson ${candidate.finishReason}`)
+        log.error(`Abnormal finishReason ${candidate.finishReason}`)
         return
       }
 
-      candidate.content.parts.forEach(part => {
+      candidate.content?.parts?.forEach(part => {
+        let found: boolean = false
         if (part.functionCall) {
+          found = true
           if (!toolCalls) {
             toolCalls = []
           }
@@ -137,21 +197,35 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
             id: '',
             type: 'function',
             function: {
-              name: part.functionCall.name.replaceAll('_', '-'), //なぜか、pluginの名前の「-」が「_」になってしまう。
+              name: part.functionCall.name?.replaceAll('_', '-') || 'name' + part.functionCall.id, //なぜか、pluginの名前の「-」が「_」になってしまう。
               arguments: JSON.stringify(part.functionCall.args),
             },
           })
-        } else if (part.text) {
+        }
+        if (part.text) {
+          found = true
           if (!content) {
             content = ''
           }
           content += part.text //TODO 繋げす別のchoiceにする?
-        } else {
+        }
+        if (part.inlineData) {
+          found = true
+          // part.inlineData.mimeType
+          const imageData = part.inlineData //.data // image/png - image/jpeg
+          if (imageData) {
+            // const blob = new Blob([buffer], { type: "image/png" });
+            // const buffer = Buffer.from(imageData || '', 'base64')
+            images.push(new Blob([Buffer.from(imageData.data || '', 'base64')], { type: imageData.mimeType }))
+          }
+        }
+        if (!found) {
+          // functionResponse fileData executableCode codeExecutionResult
           log.error(`Unexpected part`, part)
         }
       })
       choices.push({
-        index: candidate.index,
+        index: candidate.index || 0,
         finish_reason: 'stop', //| 'length' | 'tool_calls' | 'content_filter' | 'function_call';
         logprobs: null, //Choice.Logprobs | null;  //ログ確率情報
         message: {
@@ -162,7 +236,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
         },
       })
     })
-    return { choices, tokenCount }
+    return { choices, tokenCount, images }
   }
 
   private createGeminiTool(
@@ -195,7 +269,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       //     "enum": ["celsius", "fahrenheit"]
       //   }
       // },
-      const properties: { [key: string]: FunctionDeclarationSchemaProperty } = {}
+      const properties: { [key: string]: unknown } = {}
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const props = tool.function.parameters?.properties as any
       for (const propKey in props) {
@@ -214,7 +288,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
         }
       }
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let parameters: FunctionDeclarationSchema | undefined = tool.function.parameters as any
+      let parameters: Schema | undefined = tool.function.parameters as any
       // {
       //   type: FunctionDeclarationSchemaType.STRING, //OpenAIではリターン値の型指定はない SchemaType に変わった
       //   //省略可 format: 'fload', //int32, int64...
@@ -236,8 +310,8 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
     return geminiTool
   }
 
-  private workaroundObjectNoParameters(parameters: FunctionDeclarationSchema | undefined) {
-    if (parameters?.type === SchemaType.OBJECT && Object.keys(parameters?.properties).length === 0) {
+  private workaroundObjectNoParameters(parameters: Schema | undefined) {
+    if (parameters?.type === Type.OBJECT && Object.keys(parameters?.properties ?? []).length === 0) {
       // [400 Bad Request] * GenerateContentRequest.tools[0].function_declarations[0].parameters.properties: should be non-empty for OBJECT type 対策
       // https://ai.google.dev/api/rest/v1beta/cachedContents?hl=ja#Schema では、parameters.properties は省略可能となっているが、d.tsは違う
       // ので、OBJECTだけど、プロパティが無い、パラメータはなきものにする。
@@ -246,18 +320,15 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
     return parameters
   }
 
-  private convertType(
-    tool: OpenAI.Chat.Completions.ChatCompletionTool,
-    parameters: FunctionDeclarationSchema | undefined,
-  ) {
+  private convertType(tool: OpenAI.Chat.Completions.ChatCompletionTool, parameters: Schema | undefined) {
     // https://ai.google.dev/api/rest/v1beta/cachedContents?hl=ja#type
-    const typeMapping: Record<string, SchemaType> = {
-      object: SchemaType.OBJECT,
-      string: SchemaType.STRING,
-      number: SchemaType.NUMBER,
-      integer: SchemaType.INTEGER,
-      boolean: SchemaType.BOOLEAN,
-      array: SchemaType.ARRAY,
+    const typeMapping: Record<string, Type> = {
+      object: Type.OBJECT,
+      string: Type.STRING,
+      number: Type.NUMBER,
+      integer: Type.INTEGER,
+      boolean: Type.BOOLEAN,
+      array: Type.ARRAY,
     }
     const paramType = tool.function.parameters?.type as unknown as string | undefined
     if (paramType && typeMapping[paramType]) {
@@ -305,7 +376,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
     return contents.map(message => {
       const newMessage: Content = {
         role: message.role,
-        parts: this.mapShotenInlineDataInParts(message.parts),
+        parts: this.mapShotenInlineDataInParts(message.parts ?? []),
       }
       return newMessage
     })
@@ -373,7 +444,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
     let inputTokens = -1
     let outputTokens = -1
     try {
-      inputTokens = (await this.generativeModel.countTokens({ contents })).totalTokens
+      inputTokens = (await this.generativeModels.countTokens({ model: this.model, contents })).totalTokens || 0
       outputTokens = responseTokenCount
     } catch (error) {
       if ((error as Error).message.indexOf('GoogleGenerativeAI Error') >= 0) {

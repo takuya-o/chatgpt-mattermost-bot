@@ -1,6 +1,5 @@
 import { AiResponse, MattermostMessageData } from '../types.js'
 import { Client4 } from '@mattermost/client'
-import FormData from 'form-data'
 import { OpenAIWrapper } from '../OpenAIWrapper.js'
 import { PluginBase } from './PluginBase.js'
 
@@ -45,13 +44,13 @@ export class ImagePlugin extends PluginBase<ImagePluginArgs> {
           const fileId = await this.base64ToFile(
             base64Image,
             msgData.post.channel_id,
-            openAIWrapper.getMattemostClient().getClient(),
+            openAIWrapper.getMattermostClient().getClient(),
           )
           aiResponse.message = 'Here is the image you requested: ' + imagePrompt
           aiResponse.props = {
             originalMessage: 'Sure here is the image you requested. <IMAGE>' + imagePrompt + '</IMAGE>',
           }
-          aiResponse.fileId = fileId // mattermostのFileIDで一つだけファイルをリターンできる
+          aiResponse.fileId = [fileId] // mattermostのFileIDで一つだけファイルをリターンできる
         }
       }
     } catch (e) {
@@ -87,8 +86,8 @@ export class ImagePlugin extends PluginBase<ImagePluginArgs> {
     // for (let i = 0; i < bin.length; i++) {
     //   buffer[i] = bin.charCodeAt(i)
     // }
-    // form.append('files', new Blob([buffer], { type: 'image/png' }), 'image.png')
-    form.append('files', Buffer.from(b64String, 'base64'), 'image.png')
+    form.append('files', new Blob([Buffer.from(b64String, 'base64')], { type: 'image/png' }), 'image.png')
+    // form.append('files', Buffer.from(b64String, 'base64'), 'image.png')
     const response = await mattermostClient.uploadFile(form)
     this.log.trace('Uploaded a file with id', response.file_infos[0].id)
     return response.file_infos[0].id
