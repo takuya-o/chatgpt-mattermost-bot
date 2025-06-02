@@ -327,7 +327,9 @@ export class OpenAIWrapper {
         for (const image of images) {
           const form = new FormData()
           form.append('channel_id', msgData.post.channel_id)
-          form.append('files', image, 'image.png')
+          // 日付入りファイル名を生成する
+          const filename = OpenAIWrapper.createImageFileName()
+          form.append('files', image, filename)
           // // imageはBASE64文字列なのでデコードしてバイナリデータに変換する
           // const binary = Buffer.from(image, 'base64')
           // form.append('files', new Blob([binary], { type: 'image/png' }), 'image.png')
@@ -431,6 +433,24 @@ export class OpenAIWrapper {
     return aiResponse
   }
 
+  /**
+   * 現在の日付と時刻をもとに画像ファイル名（imageYYYYMMDDhhmmssSSS.png）を生成します。
+   * @returns 生成された画像ファイル名（例: image20240607_153012123.png）
+   */
+  public static createImageFileName() {
+    const now = new Date()
+    const yyyy = now.getFullYear().toString()
+    const mm = (now.getMonth() + 1).toString().padStart(2, '0')
+    const dd = now.getDate().toString().padStart(2, '0')
+    // 時分秒ミリ秒を連結してユニークな値にする
+    const hh = now.getHours().toString().padStart(2, '0')
+    const min = now.getMinutes().toString().padStart(2, '0')
+    const ss = now.getSeconds().toString().padStart(2, '0')
+    const ms = now.getMilliseconds().toString().padStart(3, '0')
+    const filename = `image${yyyy}${mm}${dd}${hh}${min}${ss}${ms}.png`
+    return filename
+  }
+
   private makeModelAndUsage(
     aiResponse: AiResponse,
     model: string,
@@ -465,9 +485,24 @@ export class OpenAIWrapper {
           // 画像データのdata:image/png;base64 messages[].content.image_url.url
           // ログでは長いurlの文字列を短くする
           message.content?.forEach(content => {
-            const url = shortenString((content as OpenAI.Chat.ChatCompletionContentPartImage).image_url?.url)
-            if (url) {
-              ;(content as OpenAI.Chat.ChatCompletionContentPartImage).image_url.url = url
+            if (content.type === 'image_url') {
+              const contentPartImage = content as OpenAI.Chat.ChatCompletionContentPartImage
+              const url = shortenString(contentPartImage.image_url?.url)
+              if (url) {
+                contentPartImage.image_url.url = url
+              }
+            } else if (content.type === 'file') {
+              const contentPartFile = content as OpenAI.Chat.ChatCompletionContentPart.File
+              const fileData = shortenString(contentPartFile.file?.file_data)
+              if (fileData) {
+                contentPartFile.file.file_data = fileData
+              }
+            } else if (content.type === 'input_audio') {
+              const contentPartAudio = content as OpenAI.Chat.ChatCompletionContentPartInputAudio
+              const audioData = shortenString(contentPartAudio.input_audio?.data)
+              if (audioData) {
+                contentPartAudio.input_audio.data = audioData
+              }
             }
           })
         }

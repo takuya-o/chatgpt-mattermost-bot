@@ -144,6 +144,1395 @@ ${graphContent}`);
   }
 };
 
+// src/AIProvider.ts
+import { Log as Log2 } from "debug-level";
+Log2.options({ json: true, colors: true });
+var log = new Log2("AIAdapter");
+var AIAdapter = class {
+  // OpenAIのUserロールからメッセージを取り出す
+  getLastMessage(messages) {
+    return messages.pop();
+  }
+  getUserMessage(openAImessage) {
+    if (!openAImessage) {
+      return "";
+    }
+    let message = "";
+    if (openAImessage.content) {
+      if (typeof openAImessage.content === "string") {
+        message = openAImessage.content;
+      } else {
+        openAImessage.content.forEach((content) => {
+          if (content.type === "text") {
+            const contentPartText = content;
+            message += contentPartText.text;
+          } else if (content.type === "image_url") {
+            const contentPartImage = content;
+            log.debug("Not support man image_url", contentPartImage.type, shortenString(contentPartImage.image_url.url));
+          } else if (content.type === "file") {
+            const contentPartFile = content;
+            log.debug(
+              "Not support file",
+              contentPartFile.type,
+              contentPartFile.file.filename,
+              shortenString(contentPartFile.file.file_data)
+            );
+          } else if (content.type === "input_audio") {
+            const contentPartAudio = content;
+            log.debug(
+              "Not support input_audio",
+              contentPartAudio.type,
+              shortenString(contentPartAudio.input_audio.data)
+            );
+          } else {
+            log.warn("Unknown content type:", content.type, content);
+          }
+        });
+      }
+    }
+    log.trace("getUserMessage():", message);
+    return message;
+  }
+  // OpenAIのFunctionsをToolsに書き換える
+  convertFunctionsToTools(functions, tools) {
+    if (functions && functions.length > 0) {
+      if (!tools) {
+        tools = [];
+      }
+      functions.forEach((functionCall) => {
+        tools?.push({
+          type: "function",
+          function: {
+            name: functionCall.name,
+            description: functionCall.description,
+            parameters: functionCall.parameters
+          }
+        });
+      });
+    }
+    return tools;
+  }
+};
+function shortenString(text) {
+  if (!text) {
+    return text;
+  }
+  if (text.length < 1024) {
+    return text;
+  }
+  return text.substring(0, 1023) + "...";
+}
+
+// src/adapters/AnthropicAdapter.ts
+import Anthropic from "@anthropic-ai/sdk";
+var AnthropicAdapter = class {
+  anthropic;
+  baseURL;
+  constructor(args) {
+    this.anthropic = new Anthropic(args);
+    this.baseURL = this.anthropic.baseURL;
+  }
+  async createMessage(options) {
+    const completion = await this.anthropic.messages.create(
+      options
+    );
+    const response = this.mapAnthropicMessageToOpenAICompletion(completion);
+    return { response, images: [] };
+  }
+  mapAnthropicMessageToOpenAICompletion(completion) {
+    const choices = [
+      { message: completion }
+    ];
+    const usage = {
+      //トータルトークン無いし属性名も違うの詰め替える
+      prompt_tokens: completion.usage.input_tokens,
+      completion_tokens: completion.usage.output_tokens,
+      total_tokens: completion.usage.input_tokens + completion.usage.output_tokens
+    };
+    return {
+      choices,
+      usage,
+      model: completion.model,
+      id: completion.id,
+      role: completion.role
+    };
+  }
+  async imagesGenerate(_imageGeneratePrams) {
+    throw new Error("Anthropic does not support image generation.");
+  }
+};
+
+// src/adapters/CohereAdapter.ts
+import { CohereClient } from "cohere-ai";
+import Log3 from "debug-level";
+Log3.options({ json: true, colors: true });
+var log2 = new Log3("Cohere");
+var CohereAdapter = class extends AIAdapter {
+  cohere;
+  baseURL;
+  constructor(args) {
+    super();
+    this.cohere = new CohereClient({ token: args?.apiKey });
+    this.baseURL = "https://api.cohere.ai/";
+  }
+  async createMessage(options) {
+    const chat = await this.cohere.chat(this.createCohereRequest(options));
+    log2.debug("Cohere chat() response: ", chat);
+    const response = this.createOpenAIChatCompletion(chat, options.model);
+    return { response, images: [] };
+  }
+  createOpenAIChatCompletion(chat, model) {
+    const choices = [
+      {
+        finish_reason: "stop",
+        index: 0,
+        logprobs: null,
+        //ログ確率情報
+        message: this.createResponseMessages(chat)
+        //tools_callsもここで作る
+      }
+    ];
+    const inputTokens = chat.meta?.billedUnits?.inputTokens ?? -1;
+    const outputTokens = chat.meta?.billedUnits?.outputTokens ?? -1;
+    return {
+      id: "",
+      created: 0,
+      object: "chat.completion",
+      //OputAI固定値
+      choices,
+      usage: {
+        prompt_tokens: inputTokens,
+        completion_tokens: outputTokens,
+        total_tokens: inputTokens + outputTokens
+      },
+      model
+    };
+  }
+  createResponseMessages(chat) {
+    if (chat.toolCalls && chat.toolCalls.length > 0) {
+      return this.createToolCallMessage(chat.toolCalls);
+    } else {
+      return {
+        role: "assistant",
+        content: chat.text,
+        refusal: null
+        // アシスタントからの拒否メッセージ
+      };
+    }
+  }
+  createToolCallMessage(toolCalls) {
+    const openAItoolCalls = toolCalls.map((toolCall) => ({
+      // Cohre形式をOpenAI形式に変換
+      id: "",
+      //TODO: toolCall.generation_idを追加予定
+      type: "function",
+      function: {
+        name: this.decodeName(toolCall.name),
+        arguments: JSON.stringify(toolCall.parameters)
+      }
+    }));
+    const message = {
+      role: "assistant",
+      content: null,
+      tool_calls: openAItoolCalls,
+      refusal: null
+      // アシスタントからの拒否メッセージ
+    };
+    return message;
+  }
+  createCohereRequest(options) {
+    let tools = this.createCohereTools(options.tools, options.functions);
+    tools = void 0;
+    const chatRequest = {
+      model: options.model,
+      message: this.getUserMessage(this.getLastMessage(options.messages)),
+      //最後のメッセージがユーザのメッセージ
+      temperature: options.temperature ?? void 0,
+      maxTokens: options.max_tokens ?? void 0,
+      p: options.top_p ?? void 0,
+      tools,
+      chatHistory: this.getChatHistory(options.messages)
+      //TODO: getUserMessage()されてから呼ばれている?
+    };
+    log2.trace("mapOpenAIOptionsToCohereOptions(): chatRequest", chatRequest);
+    return chatRequest;
+  }
+  createCohereTools(tools, functions) {
+    tools = this.convertFunctionsToTools(functions, tools);
+    if (!tools || tools.length === 0) {
+      return void 0;
+    }
+    const cohereTools = [];
+    tools.forEach((tool) => {
+      if (tool.type !== "function") {
+        log2.error(`createCohereTools(): ${tool.type} not function.`, tool);
+        return;
+      }
+      let parameterDefinitions;
+      if (tool.function.parameters) {
+        if (tool.function.parameters.type !== "object") {
+          log2.error(`createCohereTools(): parameter.type ${tool.function.parameters.type} is not  'object'`);
+          return;
+        }
+        const props = tool.function.parameters.properties;
+        parameterDefinitions = {};
+        for (const propsKey in props) {
+          const param = props[propsKey];
+          parameterDefinitions[propsKey] = {
+            description: param.description,
+            type: param.type,
+            required: param.required
+          };
+        }
+      }
+      cohereTools.push({
+        description: tool.function.description ?? "",
+        name: this.encodeName(tool.function.name),
+        //tool names can only contain certain characters (A-Za-z0-9_) and can't begin with a digit
+        parameterDefinitions
+      });
+    });
+    return cohereTools;
+  }
+  /*
+   * TypeScriptでCohere.Toolの名前をA-Za-z0-9_以外を__HEXエンコードするプログラム
+   */
+  encodeName(name) {
+    const encodedName = name.replaceAll("-", "_");
+    return encodedName;
+  }
+  decodeName(name) {
+    const decodedName = name.replaceAll("_", "-");
+    return decodedName;
+  }
+  getChatHistory(messages) {
+    if (messages.length < 1) {
+      return void 0;
+    }
+    const chatHistory = [];
+    messages.forEach((message) => {
+      if (message.role === "user") {
+        chatHistory.push({
+          role: "USER",
+          message: this.getUserMessage(message)
+        });
+      } else if (message.role === "system") {
+        chatHistory.push({
+          role: "SYSTEM",
+          message: this.getMessage(message.content)
+        });
+      } else if (message.role === "assistant") {
+        chatHistory.push({
+          role: "CHATBOT",
+          message: this.getMessage(message.content ?? "")
+        });
+      } else {
+        log2.debug(`getChatHistory(): ${message.role} not yet support.`, message);
+      }
+    });
+    return chatHistory;
+  }
+  getMessage(content) {
+    let message = "";
+    if (typeof content === "string") {
+      message = content;
+    } else {
+      content.forEach((content2) => {
+        if (content2.type === "text") {
+          const contentPartText = content2;
+          message += contentPartText.text;
+        } else if (content2.type === "refusal") {
+          const contentPartRefusal = content2;
+          message += "refusal: " + contentPartRefusal.refusal;
+        } else {
+          log2.warn("getMessage(): Unknown content type:", content2);
+        }
+      });
+    }
+    return message;
+  }
+  async imagesGenerate(_imageGeneratePrams) {
+    throw new Error("Cohere does not support image generation.");
+  }
+};
+
+// src/adapters/GoogleGeminiAdapter.ts
+import {
+  FinishReason,
+  GoogleGenAI,
+  Modality,
+  Type
+} from "@google/genai";
+import { Log as Log4 } from "debug-level";
+Log4.options({ json: true, colors: true });
+var log3 = new Log4("Gemini");
+var GoogleGeminiAdapter = class extends AIAdapter {
+  generativeModels;
+  baseURL;
+  MAX_TOKENS;
+  temperature;
+  model;
+  constructor(apiKey, model, MAX_TOKENS, temperature) {
+    super();
+    this.MAX_TOKENS = MAX_TOKENS;
+    this.temperature = temperature;
+    this.model = model;
+    const ai = new GoogleGenAI({
+      apiKey
+      // httpOptions: { apiVersion: 'v1beta' }, //v1beta v1alpha
+    });
+    this.generativeModels = ai.models;
+    this.baseURL = `https://generativelanguage.googleapis.com/v1beta/models/${model}:`;
+  }
+  // eslint-disable-next-line max-lines-per-function
+  async createMessage(options) {
+    const systemInstruction = this.model.includes("image") ? void 0 : this.createContents([options.messages.shift()])[0];
+    const currentMessages = this.createContents(options.messages);
+    const tool = this.createGeminiTool(options.tools, options.functions);
+    let tools = void 0;
+    if (tool) {
+      tools = [tool];
+    }
+    if ([
+      // 関数未対応のモデル
+      "models/gemini-2.0-flash-preview-image-generation",
+      "gemini-2.0-flash-exp-image-generation",
+      "gemini-2.0-flash-preview-image-generation",
+      //
+      "models/gemini-2.0-flash-lite",
+      "gemini-2.0-flash-lite"
+    ].some((model) => this.model.includes(model))) {
+      tools = void 0;
+    }
+    const request = {
+      model: this.model,
+      // https://ai.google.dev/api/rest/v1/models/generateContent?hl=ja#request-body
+      // https://ai.google.dev/api/rest/v1beta/models/generateContent?hl=ja
+      contents: currentMessages,
+      //safetySettings,
+      //generationConfig,
+      config: {
+        systemInstruction,
+        maxOutputTokens: this.MAX_TOKENS,
+        temperature: this.temperature,
+        //topP, TopK
+        tools,
+        // v1betaより
+        //toolConfig?: ToolConfig;
+        responseModalities: this.model.includes("image") ? [Modality.IMAGE, Modality.TEXT] : [Modality.TEXT]
+        // だめ[Modality.MODALITY_UNSPECIFIED],
+        //なくてもIMAGEできる responseMimeType: 'text/plain',
+      }
+    };
+    log3.trace("request", JSON.parse(this.shortenLongString(JSON.stringify(request))));
+    const generateContentResponse = await this.generativeModels.generateContent(request);
+    log3.trace("generateContentResponse", this.shortenResponse(generateContentResponse));
+    let usage;
+    const { choices, tokenCount: tokenCount2, images } = this.createChoices(generateContentResponse.candidates);
+    if (generateContentResponse.usageMetadata) {
+      usage = {
+        completion_tokens: generateContentResponse.usageMetadata.candidatesTokenCount || 0,
+        prompt_tokens: generateContentResponse.usageMetadata.promptTokenCount || tokenCount2,
+        // usageMetadata.promptTokenCountは無い時はtokenCountを使う
+        total_tokens: generateContentResponse.usageMetadata.totalTokenCount || 0
+        // completion_tokens_details?: CompletionUsage.CompletionTokensDetails || 0,
+        // prompt_tokens_details?: CompletionUsage.PromptTokensDetails || 0,
+      };
+    } else {
+      usage = await this.getUsage(currentMessages, tokenCount2);
+    }
+    return {
+      response: {
+        id: "",
+        choices,
+        created: 0,
+        model: options.model,
+        system_fingerprint: "",
+        object: "chat.completion",
+        //OpenAI固定値
+        usage
+      },
+      images
+    };
+  }
+  // TRACE Gemini   "modelVersion": "gemini-2.0-flash-preview-image-generation",
+  // TRACE Gemini   "usageMetadata": {
+  // TRACE Gemini     "promptTokenCount": 62,
+  // TRACE Gemini     "candidatesTokenCount": 6,
+  // TRACE Gemini     "totalTokenCount": 68,
+  // TRACE Gemini     "promptTokensDetails": [
+  // TRACE Gemini       {
+  // TRACE Gemini         "modality": "TEXT",
+  // TRACE Gemini         "tokenCount": 62
+  // TRACE Gemini       }
+  // TRACE Gemini     ]
+  // TRACE Gemini   }
+  shortenResponse(generateContentResponse) {
+    const g = JSON.parse(JSON.stringify(generateContentResponse));
+    g.candidates?.forEach((candidate) => {
+      candidate.content?.parts?.forEach((part) => {
+        if (part.inlineData) {
+          part.inlineData.data = shortenString(part.inlineData.data) || "";
+        }
+      });
+    });
+    return JSON.stringify(g);
+  }
+  shortenLongString(str) {
+    const regex = /"((?:\\.|[^"\\])*)"/g;
+    return str.replace(regex, function(match, content) {
+      if (content.length > 1024) {
+        return `"${content.slice(0, 1024)}..."`;
+      } else {
+        return match;
+      }
+    });
+  }
+  createChoices(candidates) {
+    let tokenCount2 = 0;
+    const choices = [];
+    const images = [];
+    candidates?.forEach((candidate) => {
+      tokenCount2 += candidate.tokenCount ?? 0;
+      let content = null;
+      let toolCalls = void 0;
+      if (candidate.finishReason !== FinishReason.STOP && candidate.finishReason !== FinishReason.MAX_TOKENS) {
+        log3.error(`Abnormal finishReason ${candidate.finishReason}`);
+        return;
+      }
+      candidate.content?.parts?.forEach((part) => {
+        let found = false;
+        if (part.functionCall) {
+          found = true;
+          if (!toolCalls) {
+            toolCalls = [];
+          }
+          toolCalls.push({
+            id: "",
+            type: "function",
+            function: {
+              name: part.functionCall.name?.replaceAll("_", "-") || "name" + part.functionCall.id,
+              //なぜか、pluginの名前の「-」が「_」になってしまう。
+              arguments: JSON.stringify(part.functionCall.args)
+            }
+          });
+        }
+        if (part.text) {
+          found = true;
+          if (!content) {
+            content = "";
+          }
+          content += part.text;
+        }
+        if (part.inlineData) {
+          found = true;
+          const imageData = part.inlineData;
+          if (imageData) {
+            images.push(new Blob([Buffer.from(imageData.data || "", "base64")], { type: imageData.mimeType }));
+          }
+        }
+        if (!found) {
+          log3.error(`Unexpected part`, part);
+        }
+      });
+      choices.push({
+        index: candidate.index || 0,
+        finish_reason: "stop",
+        //| 'length' | 'tool_calls' | 'content_filter' | 'function_call';
+        logprobs: null,
+        //Choice.Logprobs | null;  //ログ確率情報
+        message: {
+          role: "assistant",
+          //this.convertRoleGeminitoOpenAI(candidate.content.role),
+          content,
+          tool_calls: toolCalls,
+          refusal: null
+          // アシスタントからの拒否メッセージ
+        }
+      });
+    });
+    return { choices, tokenCount: tokenCount2, images };
+  }
+  createGeminiTool(tools, functions) {
+    tools = this.convertFunctionsToTools(functions, tools);
+    if (!tools || tools.length === 0) {
+      return void 0;
+    }
+    const functionDeclarations = [];
+    const geminiTool = {
+      functionDeclarations
+    };
+    tools.forEach((tool) => {
+      if (tool.type !== "function") {
+        log3.error(`Unexpected tool type ${tool.type}`, tool);
+        return;
+      }
+      const properties = {};
+      const props = tool.function.parameters?.properties;
+      for (const propKey in props) {
+        const param = props[propKey];
+        properties[propKey] = {
+          type: param.type,
+          description: param.description
+          //format: param.format,
+          //nullable: param.nullable,
+          //items: param.items,
+          //enum: param.enum,
+          /** Optional. Map of {@link FunctionDeclarationSchema}. */
+          //properties?: { [k: string]: FunctionDeclarationSchema; };
+          //required: param.required,
+          //example:
+        };
+      }
+      let parameters = tool.function.parameters;
+      this.convertType(tool, parameters);
+      parameters = this.workaroundObjectNoParameters(parameters);
+      functionDeclarations.push({
+        name: tool.function.name,
+        description: tool.function.description,
+        parameters
+      });
+    });
+    return geminiTool;
+  }
+  workaroundObjectNoParameters(parameters) {
+    if (parameters?.type === Type.OBJECT && Object.keys(parameters?.properties ?? []).length === 0) {
+      parameters = void 0;
+    }
+    return parameters;
+  }
+  convertType(tool, parameters) {
+    const typeMapping = {
+      object: Type.OBJECT,
+      string: Type.STRING,
+      number: Type.NUMBER,
+      integer: Type.INTEGER,
+      boolean: Type.BOOLEAN,
+      array: Type.ARRAY
+    };
+    const paramType = tool.function.parameters?.type;
+    if (paramType && typeMapping[paramType]) {
+      parameters.type = typeMapping[paramType];
+    }
+  }
+  createContents(messages) {
+    const currentMessages = [];
+    messages.forEach(async (message) => {
+      switch (message.role) {
+        // To Google ["user", "model", "function", "system"]
+        case "system":
+          currentMessages.push({
+            role: "user",
+            parts: this.createParts(message, message.name ? `${message.name} says: ` : "")
+          });
+          currentMessages.push({ role: "model", parts: [{ text: " " }] });
+          break;
+        case "user":
+          currentMessages.push({
+            role: "user",
+            parts: this.createParts(message, message.name ? `${message.name} says: ` : "")
+          });
+          break;
+        case "assistant":
+          currentMessages.push({
+            role: "model",
+            parts: this.createParts(message, message.name ? `${message.name} says: ` : "")
+          });
+          break;
+        case "tool":
+        case "function":
+        //Deprecated
+        default:
+          log3.error(`getChatHistory(): ${message.role} not yet support.`, message);
+          break;
+      }
+    });
+    return currentMessages;
+  }
+  mapShotenInlineData(contents) {
+    return contents.map((message) => {
+      const newMessage = {
+        role: message.role,
+        parts: this.mapShotenInlineDataInParts(message.parts ?? [])
+      };
+      return newMessage;
+    });
+  }
+  mapShotenInlineDataInParts(parts) {
+    return parts.map((part) => {
+      let newPart;
+      if (part.text) {
+        newPart = { text: part.text };
+      } else if (part.inlineData) {
+        newPart = {
+          inlineData: {
+            mimeType: part.inlineData.mimeType,
+            data: shortenString(part.inlineData.data) ?? ""
+          }
+        };
+      } else if (part.fileData) {
+        newPart = {
+          fileData: {
+            fileUri: part.fileData.fileUri,
+            mimeType: part.fileData.mimeType
+          }
+        };
+      } else {
+        log3.error("Unexpected Part type", part);
+        newPart = part;
+      }
+      return newPart;
+    });
+  }
+  createParts(openAImessage, name) {
+    const parts = [];
+    if (!openAImessage || !openAImessage.content) {
+      return parts;
+    }
+    if (typeof openAImessage.content === "string") {
+      parts.push({ text: name + openAImessage.content });
+    } else {
+      openAImessage.content.forEach((contentPart) => {
+        const contentPartText = contentPart;
+        if (contentPartText.type === "text") {
+          parts.push({ text: name + contentPartText.text });
+        } else if (contentPartText.type === "image_url") {
+          const conteentPartImage = contentPart;
+          const dataURL = conteentPartImage.image_url?.url;
+          this.createPart(dataURL, parts);
+        } else if (contentPartText.type === "file") {
+          const conteentPartFile = contentPart;
+          const dataURL = conteentPartFile.file.file_data;
+          this.createPart(dataURL, parts);
+        } else {
+          log3.error(`Ignore unsupported message ${contentPartText.type} type`, contentPartText);
+        }
+      });
+    }
+    return parts;
+  }
+  createPart(dataURL, parts) {
+    if (dataURL.startsWith("http")) {
+      const extensionMimeMap = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".heic": "image/heic",
+        ".heif": "image/heif",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".mp4": "video/mp4",
+        ".mpeg": "video/mpeg",
+        ".mov": "video/mov",
+        ".avi": "video/avi",
+        ".x-flv": "video/x-flv",
+        ".mpg": "video/mpg",
+        ".webm": "video/webm",
+        ".wmv": "video/wmv",
+        ".3gp": "video/3gpp",
+        ".3gpp": "video/3gpp",
+        ".pdf": "application/pdf",
+        ".js": "application/x-javascript",
+        ".py": "application/x-python",
+        ".txt": "text/plain",
+        ".html": "text/html",
+        ".css": "text/css",
+        ".md": "text/md",
+        ".csv": "text/csv",
+        ".xml": "text/xml",
+        ".rtf": "text/rtf",
+        ".json": "application/json"
+      };
+      let mimeType = void 0;
+      const matched = Object.keys(extensionMimeMap).find((ext) => dataURL.toLowerCase().endsWith(ext));
+      if (matched) {
+        mimeType = extensionMimeMap[matched];
+      }
+      parts.push({ fileData: { fileUri: dataURL, mimeType } });
+    } else {
+      const mimeEnd = dataURL.indexOf(";");
+      const mimeType = dataURL.substring("data:".length, mimeEnd);
+      const data = dataURL.substring(mimeEnd + ";base64,".length);
+      parts.push({ inlineData: { mimeType, data } });
+    }
+  }
+  async getUsage(history, responseTokenCount) {
+    const contents = [...history];
+    let inputTokens = -1;
+    let outputTokens = -1;
+    try {
+      inputTokens = (await this.generativeModels.countTokens({ model: this.model, contents })).totalTokens || 0;
+      outputTokens = responseTokenCount;
+    } catch (error) {
+      if (error.message.indexOf("GoogleGenerativeAI Error") >= 0) {
+        log3.info("Gemini 1.5 not support countTokens()?", error);
+      } else {
+        throw error;
+      }
+    }
+    return {
+      prompt_tokens: inputTokens,
+      completion_tokens: outputTokens,
+      total_tokens: inputTokens + outputTokens
+    };
+  }
+  imagesGenerate(_imageGeneratePrams) {
+    throw new Error("GoogleGeminiAdapter does not support image generation.");
+  }
+};
+
+// src/adapters/OpenAIAdapter.ts
+import Log5 from "debug-level";
+import OpenAI from "openai";
+Log5.options({ json: true, colors: true });
+var log4 = new Log5("OpenAI");
+var OpenAIAdapter = class {
+  openai;
+  baseURL;
+  constructor(openaiArgs) {
+    this.openai = new OpenAI(openaiArgs);
+    this.baseURL = this.openai.baseURL;
+  }
+  async createMessage(options) {
+    try {
+      const response = await this.openai.chat.completions.create(options);
+      return { response, images: [] };
+    } catch (error) {
+      if (error instanceof OpenAI.APIError) {
+        log4.error(`OpenAI API Error: ${error.status} ${error.name}`, error);
+      }
+      throw error;
+    }
+  }
+  async imagesGenerate(imageGeneratePrams) {
+    return this.openai.images.generate(imageGeneratePrams);
+  }
+};
+
+// src/config.ts
+import fs from "fs";
+import yaml from "js-yaml";
+var ConfigLoader = class _ConfigLoader {
+  // configCacheの型をConfigFile | nullに変更
+  static instance;
+  configCache = null;
+  constructor() {
+  }
+  // シングルトンインスタンスを取得
+  static getInstance() {
+    if (!_ConfigLoader.instance) {
+      _ConfigLoader.instance = new _ConfigLoader();
+    }
+    return _ConfigLoader.instance;
+  }
+  // 設定ファイルを取得（キャッシュあり）
+  getConfig() {
+    if (this.configCache) {
+      return this.configCache;
+    }
+    const configFileName = process.env.CONFIG_FILE || "./config.yaml";
+    if (!fs.existsSync(configFileName)) {
+      this.configCache = {};
+      return this.configCache;
+    }
+    const fileContents = fs.readFileSync(configFileName, "utf8");
+    const data = yaml.load(fileContents);
+    this.configCache = data;
+    return data;
+  }
+  // AIプロバイダーの設定リストを取得
+  getAIProvidersConfig() {
+    const config2 = this.getConfig();
+    const providers = (config2.bots || []).map((bot) => ({
+      name: bot.name,
+      type: bot.type,
+      apiKey: bot.apiKey,
+      apiBase: bot.apiBase,
+      modelName: bot.modelName,
+      visionModelName: bot.visionModelName,
+      imageModelName: bot.imageModelName,
+      apiVersion: bot.apiVersion,
+      instanceName: bot.instanceName,
+      deploymentName: bot.deploymentName,
+      visionKey: bot.visionKey,
+      visionInstanceName: bot.visionInstanceName,
+      visionDeploymentName: bot.visionDeploymentName,
+      imageKey: bot.imageKey,
+      imageInstanceName: bot.imageInstanceName,
+      imageDeploymentName: bot.imageDeploymentName,
+      reasoningEffort: bot.reasoningEffort
+    }));
+    return providers;
+  }
+};
+function getConfig() {
+  return ConfigLoader.getInstance().getConfig();
+}
+
+// src/OpenAIWrapper.ts
+var OpenAIWrapper = class _OpenAIWrapper {
+  name;
+  provider;
+  plugins = /* @__PURE__ */ new Map();
+  functions = [];
+  MAX_TOKENS;
+  TEMPERATURE;
+  MAX_PROMPT_TOKENS;
+  REASONING_EFFORT;
+  getMaxPromptTokens() {
+    return this.MAX_PROMPT_TOKENS;
+  }
+  mattermostCLient;
+  getMattermostClient() {
+    return this.mattermostCLient;
+  }
+  /**
+   * 環境変数に基づいてOpenAIモデル名を取得します。
+   *
+   * @param defaultModelName - デフォルトのモデル名。
+   * @returns 環境変数 `OPENAI_API_KEY` が設定されている場合は  `defaultModelName`  を返し、
+   *          そうでない場合は環境変数 `OPENAI_MODEL_NAME` を返します。
+   */
+  getOpenAIModelName(defaultModelName) {
+    return (process.env["OPENAI_API_KEY"] ? void 0 : process.env["OPENAI_MODEL_NAME"]) && defaultModelName;
+  }
+  // eslint-disable-next-line max-lines-per-function
+  constructor(providerConfig, mattermostClient) {
+    this.mattermostCLient = mattermostClient;
+    const yamlConfig = getConfig();
+    this.MAX_TOKENS = providerConfig.maxTokens ?? Number(yamlConfig.OPENAI_MAX_TOKENS ?? process.env["OPENAI_MAX_TOKENS"] ?? 2e3);
+    this.TEMPERATURE = providerConfig.temperature ?? Number(yamlConfig.OPENAI_TEMPERATURE ?? process.env["OPENAI_TEMPERATURE"] ?? 1);
+    this.MAX_PROMPT_TOKENS = providerConfig.maxPromptTokens ?? Number(yamlConfig.MAX_PROMPT_TOKENS ?? process.env["MAX_PROMPT_TOKENS"] ?? 2e3);
+    this.REASONING_EFFORT = providerConfig.reasoningEffort;
+    this.name = providerConfig.name;
+    if (!this.name) {
+      openAILog.error("No name. Ignore provider config", providerConfig);
+      throw new Error("No Ignore provider config");
+    }
+    let chatProvider;
+    let imageProvider = void 0;
+    let visionProvider = void 0;
+    switch (providerConfig.type) {
+      case "azure": {
+        const apiVersion = providerConfig.apiVersion ?? process.env["AZURE_OPENAI_API_VERSION"] ?? "2024-10-21";
+        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "AZURE_OPENAI_API_KEY");
+        const instanceName = providerConfig.instanceName ?? process.env["AZURE_OPENAI_API_INSTANCE_NAME"];
+        if (!instanceName) {
+          openAILog.error(`${this.name} No Azure instanceName. Ignore provider config`, providerConfig);
+          throw new Error(`${this.name} No Azure instanceName. Ignore provider config`);
+        }
+        const deploymentName = providerConfig.deploymentName ?? process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"];
+        if (!deploymentName) {
+          openAILog.error(`${this.name} No Azure deploymentName. Ignore provider config`, providerConfig);
+          throw new Error(`${this.name} No Azure deploymentName. Ignore provider config`);
+        }
+        chatProvider = new OpenAIAdapter({
+          apiKey,
+          baseURL: `https://${instanceName}.openai.azure.com/openai/deployments/${deploymentName}`,
+          //  新しいエンドポイントは以下だけど上のURLでも行ける
+          //        https://${instanceName}.cognitiveservices.azure.com/openai/deployments/${deploymentName}
+          defaultQuery: { "api-version": apiVersion },
+          defaultHeaders: { "api-key": apiKey }
+        });
+        const imageKey = providerConfig.imageKey ?? process.env["AZURE_OPENAI_API_IMAGE_KEY"];
+        const imageInstanceName = providerConfig.imageInstanceName ?? process.env["AZURE_OPENAI_API_IMAGE_INSTANCE_NAME"] ?? instanceName;
+        const imageDeploymentName = providerConfig.imageDeploymentName ?? process.env["AZURE_OPENAI_API_IMAGE_DEPLOYMENT_NAME"];
+        if (imageKey && imageDeploymentName) {
+          imageProvider = new OpenAIAdapter({
+            // Azureは東海岸(dall-e-2)やスエーデン(dall-e-3)しかDALL-Eが無いので新規に作る
+            apiKey: imageKey,
+            baseURL: `https://${imageInstanceName}.openai.azure.com/openai/deployments/${imageDeploymentName}`,
+            defaultQuery: { "api-version": apiVersion },
+            defaultHeaders: { "api-key": imageKey }
+          });
+        }
+        const visionKey = providerConfig.visionKey ?? process.env["AZURE_OPENAI_API_VISION_KEY"];
+        const visionInstanceName = providerConfig.visionInstanceName ?? process.env["AZURE_OPENAI_API_VISION_INSTANCE_NAME"] ?? instanceName;
+        const visionDeploymentName = providerConfig.visionDeploymentName ?? process.env["AZURE_OPENAI_API_VISION_DEPLOYMENT_NAME"] ?? deploymentName;
+        if (visionKey && visionDeploymentName) {
+          visionProvider = new OpenAIAdapter({
+            apiKey: visionKey,
+            baseURL: `https://${visionInstanceName}.openai.azure.com/openai/deployments/${visionDeploymentName}`,
+            defaultQuery: { "api-version": apiVersion },
+            defaultHeaders: { "api-key": visionKey }
+          });
+        }
+        providerConfig.visionInstanceName = visionInstanceName;
+        providerConfig.visionDeploymentName = visionDeploymentName;
+        ({ imageProvider, visionProvider } = this.setImageAndVisionProvider(
+          providerConfig,
+          imageProvider,
+          visionProvider
+        ));
+        this.provider = {
+          chatProvider,
+          imageProvider,
+          visionProvider,
+          type: providerConfig.type,
+          modelName: providerConfig.modelName ?? deploymentName ?? "gpt-4o-mini",
+          imageModelName: providerConfig.imageModelName ?? imageDeploymentName ?? "dall-e-3",
+          visionModelName: providerConfig.visionModelName ?? visionDeploymentName ?? "gpt-4v"
+        };
+        break;
+      }
+      case "anthropic": {
+        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "ANTHROPIC_API_KEY");
+        chatProvider = new AnthropicAdapter({ apiKey });
+        ({ imageProvider, visionProvider } = this.setImageAndVisionProvider(
+          providerConfig,
+          imageProvider,
+          visionProvider
+        ));
+        this.provider = {
+          chatProvider,
+          imageProvider,
+          visionProvider,
+          type: providerConfig.type,
+          modelName: providerConfig.modelName ?? this.getOpenAIModelName("claude-3-opus-20240229"),
+          imageModelName: providerConfig.imageModelName,
+          visionModelName: providerConfig.visionModelName
+        };
+        break;
+      }
+      case "cohere": {
+        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "COHERE_API_KEY");
+        chatProvider = new CohereAdapter({ apiKey });
+        ({ imageProvider, visionProvider } = this.setImageAndVisionProvider(
+          providerConfig,
+          imageProvider,
+          visionProvider
+        ));
+        this.provider = {
+          chatProvider,
+          imageProvider,
+          visionProvider,
+          type: providerConfig.type,
+          modelName: providerConfig.modelName ?? this.getOpenAIModelName("command-r-plus"),
+          imageModelName: providerConfig.imageModelName,
+          visionModelName: providerConfig.visionModelName
+        };
+        break;
+      }
+      case "google": {
+        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "GOOGLE_API_KEY");
+        const modelName = providerConfig.modelName ?? this.getOpenAIModelName("gemini-1.5-flash");
+        chatProvider = new GoogleGeminiAdapter(apiKey, modelName, this.MAX_TOKENS, this.TEMPERATURE);
+        if (!imageProvider) {
+          imageProvider = chatProvider;
+        }
+        visionProvider = void 0;
+        this.provider = {
+          chatProvider,
+          imageProvider,
+          visionProvider,
+          type: providerConfig.type,
+          modelName,
+          imageModelName: providerConfig.imageModelName,
+          visionModelName: providerConfig.visionModelName
+        };
+        break;
+      }
+      case "openai": {
+        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "OPENAI_API_KEY");
+        chatProvider = new OpenAIAdapter({
+          apiKey,
+          baseURL: providerConfig.apiBase ?? process.env["OPENAI_API_BASE"]
+        });
+        if (providerConfig.imageModelName) {
+          imageProvider = chatProvider;
+        }
+        if (providerConfig.visionModelName) {
+          visionProvider = chatProvider;
+        }
+        this.provider = {
+          chatProvider,
+          imageProvider,
+          visionProvider,
+          type: providerConfig.type,
+          modelName: providerConfig.modelName ?? process.env["OPENAI_MODEL_NAME"] ?? "gpt-4o-mini",
+          imageModelName: providerConfig.imageModelName ?? process.env["OPENAI_IMAGE_MODEL_NAME"] ?? "dall-e-3",
+          visionModelName: providerConfig.visionModelName ?? process.env["OPENAI_VISION_MODEL_NAME"] ?? "gpt-4v"
+        };
+        break;
+      }
+      default:
+        openAILog.error(`${this.name} Unknown LLM provider type. ${providerConfig.type}`, providerConfig);
+        throw new Error(`${this.name} Unknown LLM provider type. ${providerConfig.type}`);
+    }
+    openAILog.debug(`AIProvider: ${providerConfig.name}`, this.provider.type, this.provider.modelName);
+  }
+  compensateAPIKey(apiKey, envName) {
+    apiKey = apiKey ?? process.env[envName];
+    if (!apiKey) {
+      openAILog.error(`${this.name} No apiKey. Ignore provider config`);
+      throw new Error(`${this.name} No apiKey. Ignore provider config`);
+    }
+    return apiKey;
+  }
+  setImageAndVisionProvider(providerConfig, imageProvider, visionProvider) {
+    if (!providerConfig.imageModelName && !providerConfig.imageDeploymentName && imageProvider) {
+      imageProvider = void 0;
+    }
+    if (!providerConfig.visionModelName && !providerConfig.visionDeploymentName && visionProvider) {
+      visionProvider = void 0;
+    }
+    return { imageProvider, visionProvider };
+  }
+  getAIProvider() {
+    return this.provider;
+  }
+  getAIProvidersName() {
+    return this.name;
+  }
+  registerChatPlugin(plugin) {
+    this.plugins.set(plugin.key, plugin);
+    this.functions.push({
+      name: plugin.key,
+      description: plugin.description,
+      parameters: {
+        type: "object",
+        properties: plugin.pluginArguments,
+        required: plugin.requiredArguments
+      }
+    });
+  }
+  /**
+   * Sends a message thread to chatGPT. The response can be the message responded by the AI model or the result of a
+   * plugin call.
+   * @param messages The message thread which should be sent.
+   * @param msgData The message data of the last mattermost post representing the newest message in the message thread.
+   * @param provider The provider to use for the chat completion.
+   */
+  // eslint-disable-next-line max-lines-per-function
+  async continueThread(messages, msgData) {
+    this.logMessages(messages);
+    const NO_MESSAGE = "Sorry, but it seems I found no valid response.";
+    const completionTokensDetails = {
+      // accepted_prediction_tokens: 0,
+      // audio_tokens: 0,
+      reasoning_tokens: 0
+      // rejected_prediction_tokens: 0,
+    };
+    const promptTokensDetails = {
+      // audio_tokens: 0,
+      cached_tokens: 0
+    };
+    let aiResponse = {
+      message: NO_MESSAGE,
+      usage: {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        completion_tokens_details: completionTokensDetails,
+        prompt_tokens_details: promptTokensDetails,
+        total_tokens: 0
+      },
+      model: ""
+    };
+    let maxChainLength = 7;
+    const missingPlugins = /* @__PURE__ */ new Set();
+    let isIntermediateResponse = true;
+    while (isIntermediateResponse && maxChainLength-- > 0) {
+      const { responseMessage, finishReason, usage, model, images } = await this.createChatCompletion(
+        messages,
+        this.functions
+      );
+      this.makeModelAndUsage(aiResponse, model, usage);
+      if (images) {
+        openAILog.debug("Image files: ", images.length);
+        for (const image of images) {
+          const form = new FormData();
+          form.append("channel_id", msgData.post.channel_id);
+          const filename = _OpenAIWrapper.createImageFileName();
+          form.append("files", image, filename);
+          const response = await this.getMattermostClient().getClient().uploadFile(form);
+          openAILog.trace("Uploaded a file with id", response.file_infos[0].id);
+          const fileId = response.file_infos[0].id;
+          aiResponse.message = "";
+          aiResponse.props = {
+            originalMessage: ""
+          };
+          if (!aiResponse.fileId) {
+            aiResponse.fileId = [];
+          }
+          aiResponse.fileId.push(fileId);
+        }
+      }
+      if (responseMessage) {
+        if (responseMessage.function_call) {
+          if (!responseMessage.tool_calls) {
+            responseMessage.tool_calls = [];
+          }
+          responseMessage.tool_calls.push({
+            id: "",
+            type: "function",
+            function: responseMessage.function_call
+          });
+        }
+        if (responseMessage.tool_calls) {
+          await Promise.all(
+            responseMessage.tool_calls.map(async (tool_call) => {
+              if (tool_call.type !== "function") {
+                return;
+              }
+              const pluginName = tool_call.function.name;
+              openAILog.trace({ pluginName });
+              try {
+                const plugin = this.plugins.get(pluginName);
+                if (plugin) {
+                  aiResponse.model += pluginName + " ";
+                  const pluginArguments = JSON.parse(tool_call.function.arguments ?? "[]");
+                  openAILog.trace({ plugin, pluginArguments });
+                  const pluginResponse = await plugin.runPlugin(pluginArguments, msgData, this);
+                  openAILog.trace({ pluginResponse });
+                  if (pluginResponse.intermediate) {
+                    messages.push({
+                      role: "function",
+                      //ChatCompletionResponseMessageRoleEnum.Function,
+                      name: pluginName,
+                      content: pluginResponse.message
+                    });
+                    return;
+                  }
+                  pluginResponse.model = aiResponse.model;
+                  pluginResponse.usage = aiResponse.usage;
+                  aiResponse = pluginResponse;
+                } else {
+                  if (!missingPlugins.has(pluginName)) {
+                    missingPlugins.add(pluginName);
+                    openAILog.debug({
+                      error: "Missing plugin " + pluginName,
+                      pluginArguments: tool_call.function.arguments
+                    });
+                    messages.push({
+                      role: "system",
+                      content: `There is no plugin named '${pluginName}' available. Try without using that plugin.`
+                    });
+                    return;
+                  } else {
+                    openAILog.debug({ messages });
+                    aiResponse.message = `Sorry, but it seems there was an error when using the plugin \`\`\`${pluginName}\`\`\`.`;
+                  }
+                }
+              } catch (e) {
+                openAILog.debug({ messages, error: e });
+                aiResponse.message = `Sorry, but it seems there was an error when using the plugin \`\`\`${pluginName}\`\`\`.`;
+              }
+            })
+          );
+        } else if (responseMessage.content) {
+          if (NO_MESSAGE === aiResponse.message) {
+            aiResponse.message = responseMessage.content;
+          } else {
+            aiResponse.message += responseMessage.content;
+          }
+          if (finishReason === "length") {
+            messages.push({
+              role: "assistant",
+              content: responseMessage.content
+            });
+            continue;
+          }
+        }
+      }
+      isIntermediateResponse = false;
+    }
+    return aiResponse;
+  }
+  /**
+   * 現在の日付と時刻をもとに画像ファイル名（imageYYYYMMDDhhmmssSSS.png）を生成します。
+   * @returns 生成された画像ファイル名（例: image20240607_153012123.png）
+   */
+  static createImageFileName() {
+    const now = /* @__PURE__ */ new Date();
+    const yyyy = now.getFullYear().toString();
+    const mm = (now.getMonth() + 1).toString().padStart(2, "0");
+    const dd = now.getDate().toString().padStart(2, "0");
+    const hh = now.getHours().toString().padStart(2, "0");
+    const min = now.getMinutes().toString().padStart(2, "0");
+    const ss = now.getSeconds().toString().padStart(2, "0");
+    const ms = now.getMilliseconds().toString().padStart(3, "0");
+    const filename = `image${yyyy}${mm}${dd}${hh}${min}${ss}${ms}.png`;
+    return filename;
+  }
+  makeModelAndUsage(aiResponse, model, usage) {
+    aiResponse.model += model + " ";
+    if (usage && aiResponse.usage) {
+      aiResponse.usage.prompt_tokens += usage.prompt_tokens;
+      aiResponse.usage.prompt_tokens_details.cached_tokens += usage?.prompt_tokens_details?.cached_tokens ? usage.prompt_tokens_details.cached_tokens : 0;
+      aiResponse.usage.completion_tokens += usage.completion_tokens;
+      aiResponse.usage.completion_tokens_details.reasoning_tokens += usage?.completion_tokens_details?.reasoning_tokens ? usage.completion_tokens_details.reasoning_tokens : 0;
+      aiResponse.usage.total_tokens += usage.total_tokens;
+    }
+  }
+  /**
+   * Logs the provided messages array after serializing and shortening long image URLs.
+   *
+   * @param {OpenAI.Chat.Completions.ChatCompletionMessageParam[]} messages - An array of chat completion messages.
+   */
+  logMessages(messages) {
+    openAILog.trace(
+      "messages: ",
+      //シリアライズでDeep Copy
+      JSON.parse(JSON.stringify(messages)).map((message) => {
+        if (typeof message.content !== "string") {
+          message.content?.forEach((content) => {
+            if (content.type === "image_url") {
+              const contentPartImage = content;
+              const url = shortenString(contentPartImage.image_url?.url);
+              if (url) {
+                contentPartImage.image_url.url = url;
+              }
+            } else if (content.type === "file") {
+              const contentPartFile = content;
+              const fileData = shortenString(contentPartFile.file?.file_data);
+              if (fileData) {
+                contentPartFile.file.file_data = fileData;
+              }
+            } else if (content.type === "input_audio") {
+              const contentPartAudio = content;
+              const audioData = shortenString(contentPartAudio.input_audio?.data);
+              if (audioData) {
+                contentPartAudio.input_audio.data = audioData;
+              }
+            }
+          });
+        }
+        return message;
+      })
+    );
+  }
+  /**
+   * Creates a openAI chat model response.
+   * @param messages The message history the response is created for.
+   * @param functions Function calls which can be called by the openAI model
+   * @param provider The provider to use for the chat completion.
+   *
+   */
+  async createChatCompletion(messages, functions = void 0) {
+    let useTools = true;
+    const currentProvider = this.getAIProvider();
+    let currentOpenAi = currentProvider.chatProvider;
+    let currentModel = currentProvider.modelName;
+    if (currentProvider.type === "anthropic") {
+      useTools = false;
+    } else if (currentProvider.visionModelName) {
+      messages.some((message) => {
+        if (typeof message.content !== "string") {
+          if (currentProvider.visionModelName.indexOf("gpt-4v") >= 0) {
+            useTools = false;
+          }
+          if (currentProvider.visionProvider) {
+            currentOpenAi = currentProvider.visionProvider;
+          }
+          currentModel = currentProvider.visionModelName;
+          return true;
+        }
+      });
+    }
+    const chatCompletionOptions = {
+      model: currentModel,
+      messages,
+      temperature: this.TEMPERATURE
+    };
+    if (currentModel.startsWith("o1") || currentModel.startsWith("o3")) {
+      chatCompletionOptions.max_completion_tokens = this.MAX_TOKENS;
+      if (this.REASONING_EFFORT) {
+        chatCompletionOptions.reasoning_effort = this.REASONING_EFFORT;
+      }
+    } else {
+      chatCompletionOptions.max_tokens = this.MAX_TOKENS;
+    }
+    if (functions && useTools) {
+      if (currentModel.indexOf("gpt-3") >= 0) {
+        chatCompletionOptions.functions = functions;
+        chatCompletionOptions.function_call = "auto";
+      } else {
+        chatCompletionOptions.tools = functions.map((func) => ({ type: "function", function: func }));
+        chatCompletionOptions.tool_choice = "auto";
+      }
+    }
+    this.logChatCompletionsCreateParameters(chatCompletionOptions);
+    const ret = await currentOpenAi.createMessage(chatCompletionOptions);
+    const chatCompletion = ret.response;
+    openAILog.trace({ chatCompletion });
+    return {
+      responseMessage: chatCompletion.choices?.[0]?.message,
+      usage: chatCompletion.usage,
+      model: chatCompletion.model,
+      finishReason: chatCompletion.choices?.[0]?.finish_reason,
+      images: ret.images
+    };
+  }
+  /**
+   * Logs the parameters used for creating a chat completion in OpenAI.
+   *
+   * @param chatCompletionOptions - The options provided to create a chat completion.
+   */
+  logChatCompletionsCreateParameters(chatCompletionOptions) {
+    openAILog.trace("chat.completions.create() Parameters", {
+      model: chatCompletionOptions.model,
+      max_tokens: chatCompletionOptions.max_tokens,
+      temperature: chatCompletionOptions.temperature,
+      function_call: chatCompletionOptions.function_call,
+      functions: chatCompletionOptions.functions?.map(
+        (func) => `${func.name}(${this.toStringParameters(func.parameters)}): ${func.description}`
+      ),
+      tools_choice: chatCompletionOptions.tool_choice,
+      tools: chatCompletionOptions.tools?.map(
+        (tool) => `${tool.type} ${tool.function.name}(${this.toStringParameters(tool.function.parameters)}): ${tool.function.description}`
+      )
+    });
+  }
+  // Function Parametersのプロパティを文字列に展開する
+  toStringParameters(parameters) {
+    if (!parameters) {
+      return "";
+    }
+    let string = "";
+    const props = parameters.properties;
+    for (const paramKey in props) {
+      if (string.length > 0) {
+        string += ", ";
+      }
+      string += `${paramKey}:${props[paramKey].type}`;
+    }
+    return string;
+  }
+  /**
+   * Creates a openAI DALL-E response.
+   * @param prompt The image description provided to DALL-E.
+   */
+  async createImage(prompt) {
+    const currentProvider = this.getAIProvider();
+    const createImageOptions = {
+      model: currentProvider.imageModelName,
+      prompt,
+      n: 1,
+      size: "1024x1024",
+      //Must be one of 256x256, 512x512, or 1024x1024 for dall-e-2. Must be one of 1024x1024, 1792x1024, or 1024x1792 for dall-e-3 models.
+      quality: "standard",
+      //"hd", $0.080/枚=1枚12円で倍額
+      response_format: "b64_json"
+    };
+    openAILog.trace({ createImageOptions });
+    let image;
+    if (currentProvider.type !== "azure" || currentProvider.imageModelName !== "dall-e-2") {
+      image = await currentProvider.imageProvider.imagesGenerate(createImageOptions);
+    } else {
+      image = await currentProvider.imageProvider.imagesGenerate(createImageOptions);
+    }
+    const dataTmp = image.data?.[0]?.b64_json;
+    if (dataTmp) {
+      image.data[0].b64_json = shortenString(dataTmp);
+    }
+    openAILog.trace("images.generate", { image });
+    if (dataTmp) {
+      image.data[0].b64_json = dataTmp;
+    }
+    return image.data?.[0]?.b64_json;
+  }
+};
+
 // src/plugins/ImagePlugin.ts
 var ImagePlugin = class extends PluginBase {
   GPT_INSTRUCTIONS = "You are a prompt engineer who helps a user to create good prompts for the image AI DALL-E. The user will provide you with a short image description and you transform this into a proper prompt text. When creating the prompt first describe the looks and structure of the image. Secondly, describe the photography style, like camera angle, camera position, lenses. Third, describe the lighting and specific colors. Your prompt have to focus on the overall image and not describe any details on it. Consider adding buzzwords, for example 'detailed', 'hyper-detailed', 'very realistic', 'sketchy', 'street-art', 'drawing', or similar words. Keep the prompt as simple as possible and never get longer than 400 characters. You may only answer with the resulting prompt and provide no description or explanations.";
@@ -208,7 +1597,8 @@ The input was:${args.imageDescription}`;
   async base64ToFile(b64String, channelId, mattermostClient) {
     const form = new FormData();
     form.append("channel_id", channelId);
-    form.append("files", new Blob([Buffer.from(b64String, "base64")], { type: "image/png" }), "image.png");
+    const fileName = OpenAIWrapper.createImageFileName();
+    form.append("files", new Blob([Buffer.from(b64String, "base64")], { type: "image/png" }), fileName);
     const response = await mattermostClient.uploadFile(form);
     this.log.trace("Uploaded a file with id", response.file_infos[0].id);
     return response.file_infos[0].id;
@@ -281,19 +1671,6 @@ var UnuseImagesPlugin = class extends PluginBase {
     };
   }
 };
-
-// src/config.ts
-import fs from "fs";
-import yaml from "js-yaml";
-function getConfig() {
-  const configFileName = process.env.CONFIG_FILE || "./config.yaml";
-  if (!fs.existsSync(configFileName)) {
-    return {};
-  }
-  const fileContents = fs.readFileSync(configFileName, "utf8");
-  const data = yaml.load(fileContents);
-  return data;
-}
 
 // src/tokenCount.ts
 import tiktoken from "tiktoken-node";
@@ -579,7 +1956,7 @@ var BotService2 = class {
   // クライアントメッセージを処理する
   async onClientMessage(msg) {
     if (msg.event !== "posted" && msg.event !== "post_edited" || !this.meId) {
-      matterMostLog.debug("Event not posted ", msg.event, { msg });
+      matterMostLog.debug(`Event not posted: ${msg.event}`);
       return;
     }
     const msgData = this.parseMessageData(msg.data);
@@ -637,14 +2014,31 @@ var BotService2 = class {
                 file.height
               );
               if (url) {
-                content.push(
-                  { type: "image_url", image_url: { url } }
-                  //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
-                );
+                if ([
+                  "pdf",
+                  "x-javascript",
+                  "javascript",
+                  "x-python",
+                  "plain",
+                  "html",
+                  "css",
+                  "md",
+                  "csv",
+                  "xml",
+                  "rtf"
+                ].includes(file.mime_type.replace(/^.+\//, ""))) {
+                  content.push({ type: "file", file: { filename: file.name, file_data: url } });
+                } else {
+                  content.push(
+                    { type: "image_url", image_url: { url } }
+                    //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
+                  );
+                }
               }
             })
           );
         }
+        const excludeImage = [];
         if (threadPost.metadata.embeds) {
           for (const embed of threadPost.metadata.embeds) {
             if (embed.url && embed.type === "link") {
@@ -652,6 +2046,12 @@ var BotService2 = class {
               if (url) {
                 content.push({ type: "image_url", image_url: { url } });
               }
+            } else if (embed.type === "opengraph" && embed.url && (embed.url.startsWith("https://youtu.be/") || embed.url.startsWith("https://www.youtube.com/"))) {
+              const data = embed.data;
+              if (data?.type === "opengraph" && data?.images?.[0]?.secure_url) {
+                excludeImage.push(data.images[0].secure_url);
+              }
+              content.push({ type: "image_url", image_url: { url: embed.url } });
             } else {
               botLog.warn(`Unsupported embed type: ${embed.type}. Skipping.`, embed);
             }
@@ -660,15 +2060,19 @@ var BotService2 = class {
         if (threadPost.metadata.images) {
           await Promise.all(
             Object.keys(threadPost.metadata.images).map(async (url) => {
-              const postImage = threadPost.metadata.images[url];
-              url = await this.getBase64Image(
-                url,
-                this.mattermostClient.getClient().getToken(),
-                postImage.format,
-                postImage.width,
-                postImage.height
-              );
-              content.push({ type: "image_url", image_url: { url } });
+              if (!excludeImage.includes(url)) {
+                const postImage = threadPost.metadata.images[url];
+                url = await this.getBase64Image(
+                  url,
+                  this.mattermostClient.getClient().getToken(),
+                  postImage.format,
+                  postImage.width,
+                  postImage.height
+                );
+                content.push({ type: "image_url", image_url: { url } });
+              } else {
+                botLog.info(`Skipping image URL: ${url} as it is in the exclude list.`);
+              }
             })
           );
         }
@@ -714,15 +2118,20 @@ var BotService2 = class {
       return "";
     }
     let buffer = Buffer.from(await response.arrayBuffer());
-    if (!format || ["png", "jpeg", "webp", "gif"].includes(format.replace(/^.+\//, "")) && (width <= 0 || height <= 0)) {
-      const metadata = await sharp(buffer).metadata();
-      width = metadata.width ?? 0;
-      height = metadata.height ?? 0;
-      format = metadata.format ?? "";
-    }
-    if (["mov", "mpeg", "mp4", "mpg", "avi", "wmv", "mpegps", "flv"].includes(format.replace(/^.+\//, ""))) {
+    if (["pdf", "x-javascript", "javascript", "x-python", "plain", "html", "css", "md", "csv", "xml", "rtf"].includes(
+      format.replace(/^.+\//, "")
+    )) {
+      matterMostLog.info(`Find Document file ${format} ${url}`);
+      format = this.toMimeType(format, "text");
+    } else if (["mov", "mpeg", "mp4", "mpg", "avi", "wmv", "mpegps", "flv"].includes(format.replace(/^.+\//, ""))) {
       format = this.toMimeType(format, "video");
     } else {
+      if (!format || ["png", "jpeg", "webp", "gif"].includes(format.replace(/^.+\//, "")) && (width <= 0 || height <= 0)) {
+        const metadata = await sharp(buffer).metadata();
+        width = metadata.width ?? 0;
+        height = metadata.height ?? 0;
+        format = metadata.format ?? "";
+      }
       if (!["png", "jpeg", "webp", "gif"].includes(format.replace(/^.+\//, ""))) {
         matterMostLog.warn(`Unsupported image format: ${format}. Converting to JPEG.`);
         buffer = await sharp(buffer).jpeg().toBuffer();
@@ -973,1220 +2382,6 @@ var MattermostClient = class _MattermostClient {
   }
   getWsClient() {
     return this.wsClient;
-  }
-};
-
-// src/AIProvider.ts
-import { Log as Log2 } from "debug-level";
-Log2.options({ json: true, colors: true });
-var log = new Log2("AIAdapter");
-var AIAdapter = class {
-  // OpenAIのUserロールからメッセージを取り出す
-  getLastMessage(messages) {
-    return messages.pop();
-  }
-  getUserMessage(openAImessage) {
-    if (!openAImessage) {
-      return "";
-    }
-    let message = "";
-    if (openAImessage.content) {
-      if (typeof openAImessage.content === "string") {
-        message = openAImessage.content;
-      } else {
-        openAImessage.content.forEach((content) => {
-          const contentPartText = content;
-          if (contentPartText.type === "text") {
-            message += contentPartText.text;
-          } else {
-            const conteentPartImage = content;
-            log.debug(
-              "Not support man image_url",
-              conteentPartImage.type,
-              shortenString(conteentPartImage.image_url.url)
-            );
-          }
-        });
-      }
-    }
-    log.trace("getUserMessage():", message);
-    return message;
-  }
-  // OpenAIのFunctionsをToolsに書き換える
-  convertFunctionsToTools(functions, tools) {
-    if (functions && functions.length > 0) {
-      if (!tools) {
-        tools = [];
-      }
-      functions.forEach((functionCall) => {
-        tools?.push({
-          type: "function",
-          function: {
-            name: functionCall.name,
-            description: functionCall.description,
-            parameters: functionCall.parameters
-          }
-        });
-      });
-    }
-    return tools;
-  }
-};
-function shortenString(text) {
-  if (!text) {
-    return text;
-  }
-  if (text.length < 1024) {
-    return text;
-  }
-  return text.substring(0, 1023) + "...";
-}
-
-// src/adapters/AnthropicAdapter.ts
-import Anthropic from "@anthropic-ai/sdk";
-var AnthropicAdapter = class {
-  anthropic;
-  baseURL;
-  constructor(args) {
-    this.anthropic = new Anthropic(args);
-    this.baseURL = this.anthropic.baseURL;
-  }
-  async createMessage(options) {
-    const completion = await this.anthropic.messages.create(
-      options
-    );
-    const response = this.mapAnthropicMessageToOpenAICompletion(completion);
-    return { response, images: [] };
-  }
-  mapAnthropicMessageToOpenAICompletion(completion) {
-    const choices = [
-      { message: completion }
-    ];
-    const usage = {
-      //トータルトークン無いし属性名も違うの詰め替える
-      prompt_tokens: completion.usage.input_tokens,
-      completion_tokens: completion.usage.output_tokens,
-      total_tokens: completion.usage.input_tokens + completion.usage.output_tokens
-    };
-    return {
-      choices,
-      usage,
-      model: completion.model,
-      id: completion.id,
-      role: completion.role
-    };
-  }
-  async imagesGenerate(_imageGeneratePrams) {
-    throw new Error("Anthropic does not support image generation.");
-  }
-};
-
-// src/adapters/CohereAdapter.ts
-import { CohereClient } from "cohere-ai";
-import Log3 from "debug-level";
-Log3.options({ json: true, colors: true });
-var log2 = new Log3("Cohere");
-var CohereAdapter = class extends AIAdapter {
-  cohere;
-  baseURL;
-  constructor(args) {
-    super();
-    this.cohere = new CohereClient({ token: args?.apiKey });
-    this.baseURL = "https://api.cohere.ai/";
-  }
-  async createMessage(options) {
-    const chat = await this.cohere.chat(this.createCohereRequest(options));
-    log2.debug("Cohere chat() response: ", chat);
-    const response = this.createOpenAIChatCompletion(chat, options.model);
-    return { response, images: [] };
-  }
-  createOpenAIChatCompletion(chat, model) {
-    const choices = [
-      {
-        finish_reason: "stop",
-        index: 0,
-        logprobs: null,
-        //ログ確率情報
-        message: this.createResponseMessages(chat)
-        //tools_callsもここで作る
-      }
-    ];
-    const inputTokens = chat.meta?.billedUnits?.inputTokens ?? -1;
-    const outputTokens = chat.meta?.billedUnits?.outputTokens ?? -1;
-    return {
-      id: "",
-      created: 0,
-      object: "chat.completion",
-      //OputAI固定値
-      choices,
-      usage: {
-        prompt_tokens: inputTokens,
-        completion_tokens: outputTokens,
-        total_tokens: inputTokens + outputTokens
-      },
-      model
-    };
-  }
-  createResponseMessages(chat) {
-    if (chat.toolCalls && chat.toolCalls.length > 0) {
-      return this.createToolCallMessage(chat.toolCalls);
-    } else {
-      return {
-        role: "assistant",
-        content: chat.text,
-        refusal: null
-        // アシスタントからの拒否メッセージ
-      };
-    }
-  }
-  createToolCallMessage(toolCalls) {
-    const openAItoolCalls = toolCalls.map((toolCall) => ({
-      // Cohre形式をOpenAI形式に変換
-      id: "",
-      //TODO: toolCall.generation_idを追加予定
-      type: "function",
-      function: {
-        name: this.decodeName(toolCall.name),
-        arguments: JSON.stringify(toolCall.parameters)
-      }
-    }));
-    const message = {
-      role: "assistant",
-      content: null,
-      tool_calls: openAItoolCalls,
-      refusal: null
-      // アシスタントからの拒否メッセージ
-    };
-    return message;
-  }
-  createCohereRequest(options) {
-    let tools = this.createCohereTools(options.tools, options.functions);
-    tools = void 0;
-    const chatRequest = {
-      model: options.model,
-      message: this.getUserMessage(this.getLastMessage(options.messages)),
-      //最後のメッセージがユーザのメッセージ
-      temperature: options.temperature ?? void 0,
-      maxTokens: options.max_tokens ?? void 0,
-      p: options.top_p ?? void 0,
-      tools,
-      chatHistory: this.getChatHistory(options.messages)
-      //TODO: getUserMessage()されてから呼ばれている?
-    };
-    log2.trace("mapOpenAIOptionsToCohereOptions(): chatRequest", chatRequest);
-    return chatRequest;
-  }
-  createCohereTools(tools, functions) {
-    tools = this.convertFunctionsToTools(functions, tools);
-    if (!tools || tools.length === 0) {
-      return void 0;
-    }
-    const cohereTools = [];
-    tools.forEach((tool) => {
-      if (tool.type !== "function") {
-        log2.error(`createCohereTools(): ${tool.type} not function.`, tool);
-        return;
-      }
-      let parameterDefinitions;
-      if (tool.function.parameters) {
-        if (tool.function.parameters.type !== "object") {
-          log2.error(`createCohereTools(): parameter.type ${tool.function.parameters.type} is not  'object'`);
-          return;
-        }
-        const props = tool.function.parameters.properties;
-        parameterDefinitions = {};
-        for (const propsKey in props) {
-          const param = props[propsKey];
-          parameterDefinitions[propsKey] = {
-            description: param.description,
-            type: param.type,
-            required: param.required
-          };
-        }
-      }
-      cohereTools.push({
-        description: tool.function.description ?? "",
-        name: this.encodeName(tool.function.name),
-        //tool names can only contain certain characters (A-Za-z0-9_) and can't begin with a digit
-        parameterDefinitions
-      });
-    });
-    return cohereTools;
-  }
-  /*
-   * TypeScriptでCohere.Toolの名前をA-Za-z0-9_以外を__HEXエンコードするプログラム
-   */
-  encodeName(name) {
-    const encodedName = name.replaceAll("-", "_");
-    return encodedName;
-  }
-  decodeName(name) {
-    const decodedName = name.replaceAll("_", "-");
-    return decodedName;
-  }
-  getChatHistory(messages) {
-    if (messages.length < 1) {
-      return void 0;
-    }
-    const chatHistory = [];
-    messages.forEach((message) => {
-      if (message.role === "user") {
-        chatHistory.push({
-          role: "USER",
-          message: this.getUserMessage(message)
-        });
-      } else if (message.role === "system") {
-        chatHistory.push({
-          role: "SYSTEM",
-          message: message.content
-        });
-      } else if (message.role === "assistant") {
-        chatHistory.push({
-          role: "CHATBOT",
-          message: message.content ?? ""
-        });
-      } else {
-        log2.debug(`getChatHistory(): ${message.role} not yet support.`, message);
-      }
-    });
-    return chatHistory;
-  }
-  async imagesGenerate(_imageGeneratePrams) {
-    throw new Error("Cohere does not support image generation.");
-  }
-};
-
-// src/adapters/GoogleGeminiAdapter.ts
-import {
-  FinishReason,
-  GoogleGenAI,
-  Modality,
-  Type
-} from "@google/genai";
-import { Log as Log4 } from "debug-level";
-Log4.options({ json: true, colors: true });
-var log3 = new Log4("Gemini");
-var GoogleGeminiAdapter = class extends AIAdapter {
-  generativeModels;
-  baseURL;
-  MAX_TOKENS;
-  temperature;
-  model;
-  constructor(apiKey, model, MAX_TOKENS, temperature) {
-    super();
-    this.MAX_TOKENS = MAX_TOKENS;
-    this.temperature = temperature;
-    this.model = model;
-    const ai = new GoogleGenAI({
-      apiKey
-      // httpOptions: { apiVersion: 'v1beta' }, //v1beta v1alpha
-    });
-    this.generativeModels = ai.models;
-    this.baseURL = `https://generativelanguage.googleapis.com/v1beta/models/${model}:`;
-  }
-  // eslint-disable-next-line max-lines-per-function
-  async createMessage(options) {
-    const systemInstruction = this.model.includes("image") ? void 0 : this.createContents([options.messages.shift()])[0];
-    const currentMessages = this.createContents(options.messages);
-    const tool = this.createGeminiTool(options.tools, options.functions);
-    let tools = void 0;
-    if (tool) {
-      tools = [tool];
-    }
-    if ([
-      // 関数未対応のモデル
-      "models/gemini-2.0-flash-preview-image-generation",
-      "gemini-2.0-flash-exp-image-generation",
-      "gemini-2.0-flash-preview-image-generation",
-      //
-      "models/gemini-2.0-flash-lite",
-      "gemini-2.0-flash-lite"
-    ].some((model) => this.model.includes(model))) {
-      tools = void 0;
-    }
-    const request = {
-      model: this.model,
-      // https://ai.google.dev/api/rest/v1/models/generateContent?hl=ja#request-body
-      // https://ai.google.dev/api/rest/v1beta/models/generateContent?hl=ja
-      contents: currentMessages,
-      //safetySettings,
-      //generationConfig,
-      config: {
-        systemInstruction,
-        maxOutputTokens: this.MAX_TOKENS,
-        temperature: this.temperature,
-        //topP, TopK
-        tools,
-        // v1betaより
-        //toolConfig?: ToolConfig;
-        responseModalities: this.model.includes("image") ? [Modality.IMAGE, Modality.TEXT] : [Modality.TEXT]
-        // だめ[Modality.MODALITY_UNSPECIFIED],
-        //なくてもIMAGEできる responseMimeType: 'text/plain',
-      }
-    };
-    log3.trace("request", JSON.parse(this.shortenLongString(JSON.stringify(request))));
-    const generateContentResponse = await this.generativeModels.generateContent(request);
-    log3.trace("generateContentResponse", this.shortenResponse(generateContentResponse));
-    let usage;
-    const { choices, tokenCount: tokenCount2, images } = this.createChoices(generateContentResponse.candidates);
-    if (generateContentResponse.usageMetadata) {
-      usage = {
-        completion_tokens: generateContentResponse.usageMetadata.candidatesTokenCount || 0,
-        prompt_tokens: generateContentResponse.usageMetadata.promptTokenCount || tokenCount2,
-        // usageMetadata.promptTokenCountは無い時はtokenCountを使う
-        total_tokens: generateContentResponse.usageMetadata.totalTokenCount || 0
-        // completion_tokens_details?: CompletionUsage.CompletionTokensDetails || 0,
-        // prompt_tokens_details?: CompletionUsage.PromptTokensDetails || 0,
-      };
-    } else {
-      usage = await this.getUsage(currentMessages, tokenCount2);
-    }
-    return {
-      response: {
-        id: "",
-        choices,
-        created: 0,
-        model: options.model,
-        system_fingerprint: "",
-        object: "chat.completion",
-        //OpenAI固定値
-        usage
-      },
-      images
-    };
-  }
-  // TRACE Gemini   "modelVersion": "gemini-2.0-flash-preview-image-generation",
-  // TRACE Gemini   "usageMetadata": {
-  // TRACE Gemini     "promptTokenCount": 62,
-  // TRACE Gemini     "candidatesTokenCount": 6,
-  // TRACE Gemini     "totalTokenCount": 68,
-  // TRACE Gemini     "promptTokensDetails": [
-  // TRACE Gemini       {
-  // TRACE Gemini         "modality": "TEXT",
-  // TRACE Gemini         "tokenCount": 62
-  // TRACE Gemini       }
-  // TRACE Gemini     ]
-  // TRACE Gemini   }
-  shortenResponse(generateContentResponse) {
-    const g = JSON.parse(JSON.stringify(generateContentResponse));
-    g.candidates?.forEach((candidate) => {
-      candidate.content?.parts?.forEach((part) => {
-        if (part.inlineData) {
-          part.inlineData.data = shortenString(part.inlineData.data) || "";
-        }
-      });
-    });
-    return JSON.stringify(g);
-  }
-  shortenLongString(str) {
-    const regex = /"(.*?)"/g;
-    return str.replace(regex, function(match, content) {
-      if (content.length > 1024) {
-        return `"${content.slice(0, 1024)}..."`;
-      } else {
-        return match;
-      }
-    });
-  }
-  createChoices(candidates) {
-    let tokenCount2 = 0;
-    const choices = [];
-    const images = [];
-    candidates?.forEach((candidate) => {
-      tokenCount2 += candidate.tokenCount ?? 0;
-      let content = null;
-      let toolCalls = void 0;
-      if (candidate.finishReason !== FinishReason.STOP && candidate.finishReason !== FinishReason.MAX_TOKENS) {
-        log3.error(`Abnormal finishReason ${candidate.finishReason}`);
-        return;
-      }
-      candidate.content?.parts?.forEach((part) => {
-        let found = false;
-        if (part.functionCall) {
-          found = true;
-          if (!toolCalls) {
-            toolCalls = [];
-          }
-          toolCalls.push({
-            id: "",
-            type: "function",
-            function: {
-              name: part.functionCall.name?.replaceAll("_", "-") || "name" + part.functionCall.id,
-              //なぜか、pluginの名前の「-」が「_」になってしまう。
-              arguments: JSON.stringify(part.functionCall.args)
-            }
-          });
-        }
-        if (part.text) {
-          found = true;
-          if (!content) {
-            content = "";
-          }
-          content += part.text;
-        }
-        if (part.inlineData) {
-          found = true;
-          const imageData = part.inlineData;
-          if (imageData) {
-            images.push(new Blob([Buffer.from(imageData.data || "", "base64")], { type: imageData.mimeType }));
-          }
-        }
-        if (!found) {
-          log3.error(`Unexpected part`, part);
-        }
-      });
-      choices.push({
-        index: candidate.index || 0,
-        finish_reason: "stop",
-        //| 'length' | 'tool_calls' | 'content_filter' | 'function_call';
-        logprobs: null,
-        //Choice.Logprobs | null;  //ログ確率情報
-        message: {
-          role: "assistant",
-          //this.convertRoleGeminitoOpenAI(candidate.content.role),
-          content,
-          tool_calls: toolCalls,
-          refusal: null
-          // アシスタントからの拒否メッセージ
-        }
-      });
-    });
-    return { choices, tokenCount: tokenCount2, images };
-  }
-  createGeminiTool(tools, functions) {
-    tools = this.convertFunctionsToTools(functions, tools);
-    if (!tools || tools.length === 0) {
-      return void 0;
-    }
-    const functionDeclarations = [];
-    const geminiTool = {
-      functionDeclarations
-    };
-    tools.forEach((tool) => {
-      if (tool.type !== "function") {
-        log3.error(`Unexpected tool type ${tool.type}`, tool);
-        return;
-      }
-      const properties = {};
-      const props = tool.function.parameters?.properties;
-      for (const propKey in props) {
-        const param = props[propKey];
-        properties[propKey] = {
-          type: param.type,
-          description: param.description
-          //format: param.format,
-          //nullable: param.nullable,
-          //items: param.items,
-          //enum: param.enum,
-          /** Optional. Map of {@link FunctionDeclarationSchema}. */
-          //properties?: { [k: string]: FunctionDeclarationSchema; };
-          //required: param.required,
-          //example:
-        };
-      }
-      let parameters = tool.function.parameters;
-      this.convertType(tool, parameters);
-      parameters = this.workaroundObjectNoParameters(parameters);
-      functionDeclarations.push({
-        name: tool.function.name,
-        description: tool.function.description,
-        parameters
-      });
-    });
-    return geminiTool;
-  }
-  workaroundObjectNoParameters(parameters) {
-    if (parameters?.type === Type.OBJECT && Object.keys(parameters?.properties ?? []).length === 0) {
-      parameters = void 0;
-    }
-    return parameters;
-  }
-  convertType(tool, parameters) {
-    const typeMapping = {
-      object: Type.OBJECT,
-      string: Type.STRING,
-      number: Type.NUMBER,
-      integer: Type.INTEGER,
-      boolean: Type.BOOLEAN,
-      array: Type.ARRAY
-    };
-    const paramType = tool.function.parameters?.type;
-    if (paramType && typeMapping[paramType]) {
-      parameters.type = typeMapping[paramType];
-    }
-  }
-  createContents(messages) {
-    const currentMessages = [];
-    messages.forEach(async (message) => {
-      switch (message.role) {
-        // To Google ["user", "model", "function", "system"]
-        case "system":
-          currentMessages.push({
-            role: "user",
-            parts: this.createParts(message, message.name ? `${message.name} says: ` : "")
-          });
-          currentMessages.push({ role: "model", parts: [{ text: " " }] });
-          break;
-        case "user":
-          currentMessages.push({
-            role: "user",
-            parts: this.createParts(message, message.name ? `${message.name} says: ` : "")
-          });
-          break;
-        case "assistant":
-          currentMessages.push({
-            role: "model",
-            parts: this.createParts(message, message.name ? `${message.name} says: ` : "")
-          });
-          break;
-        case "tool":
-        case "function":
-        //Deprecated
-        default:
-          log3.error(`getChatHistory(): ${message.role} not yet support.`, message);
-          break;
-      }
-    });
-    log3.trace("currentMessages():", this.mapShotenInlineData(currentMessages));
-    return currentMessages;
-  }
-  mapShotenInlineData(contents) {
-    return contents.map((message) => {
-      const newMessage = {
-        role: message.role,
-        parts: this.mapShotenInlineDataInParts(message.parts ?? [])
-      };
-      return newMessage;
-    });
-  }
-  mapShotenInlineDataInParts(parts) {
-    return parts.map((part) => {
-      let newPart;
-      if (part.text) {
-        newPart = { text: part.text };
-      } else if (part.inlineData) {
-        newPart = {
-          inlineData: {
-            mimeType: part.inlineData.mimeType,
-            data: shortenString(part.inlineData.data) ?? ""
-          }
-        };
-      } else {
-        log3.error("Unexpected Part type", part);
-        throw new Error(`Unexpected Part type ${part}`);
-      }
-      return newPart;
-    });
-  }
-  createParts(openAImessage, name) {
-    const parts = [];
-    if (!openAImessage || !openAImessage.content) {
-      return parts;
-    }
-    if (typeof openAImessage.content === "string") {
-      parts.push({ text: name + openAImessage.content });
-    } else {
-      openAImessage.content.forEach((contentPart) => {
-        const contentPartText = contentPart;
-        if (contentPartText.type === "text") {
-          parts.push({ text: name + contentPartText.text });
-        } else if (contentPartText.type === "image_url") {
-          const conteentPartImage = contentPart;
-          const dataURL = conteentPartImage.image_url.url;
-          const mimeEnd = dataURL.indexOf(";");
-          const mimeType = dataURL.substring("data:".length, mimeEnd);
-          const data = dataURL.substring(mimeEnd + ";base64,".length);
-          parts.push({ inlineData: { mimeType, data } });
-        } else {
-          log3.error(`Ignore unsupported message ${contentPartText.type} type`, contentPartText);
-        }
-      });
-    }
-    return parts;
-  }
-  async getUsage(history, responseTokenCount) {
-    const contents = [...history];
-    let inputTokens = -1;
-    let outputTokens = -1;
-    try {
-      inputTokens = (await this.generativeModels.countTokens({ model: this.model, contents })).totalTokens || 0;
-      outputTokens = responseTokenCount;
-    } catch (error) {
-      if (error.message.indexOf("GoogleGenerativeAI Error") >= 0) {
-        log3.info("Gemini 1.5 not support countTokens()?", error);
-      } else {
-        throw error;
-      }
-    }
-    return {
-      prompt_tokens: inputTokens,
-      completion_tokens: outputTokens,
-      total_tokens: inputTokens + outputTokens
-    };
-  }
-  imagesGenerate(_imageGeneratePrams) {
-    throw new Error("GoogleGeminiAdapter does not support image generation.");
-  }
-};
-
-// src/adapters/OpenAIAdapter.ts
-import Log5 from "debug-level";
-import OpenAI from "openai";
-Log5.options({ json: true, colors: true });
-var log4 = new Log5("OpenAI");
-var OpenAIAdapter = class {
-  openai;
-  baseURL;
-  constructor(openaiArgs) {
-    this.openai = new OpenAI(openaiArgs);
-    this.baseURL = this.openai.baseURL;
-  }
-  async createMessage(options) {
-    try {
-      const response = await this.openai.chat.completions.create(options);
-      return { response, images: [] };
-    } catch (error) {
-      if (error instanceof OpenAI.APIError) {
-        log4.error(`OpenAI API Error: ${error.status} ${error.name}`, error);
-      }
-      throw error;
-    }
-  }
-  async imagesGenerate(imageGeneratePrams) {
-    return this.openai.images.generate(imageGeneratePrams);
-  }
-};
-
-// src/OpenAIWrapper.ts
-var OpenAIWrapper = class {
-  name;
-  provider;
-  plugins = /* @__PURE__ */ new Map();
-  functions = [];
-  MAX_TOKENS;
-  TEMPERATURE;
-  MAX_PROMPT_TOKENS;
-  REASONING_EFFORT;
-  getMaxPromptTokens() {
-    return this.MAX_PROMPT_TOKENS;
-  }
-  mattermostCLient;
-  getMattermostClient() {
-    return this.mattermostCLient;
-  }
-  /**
-   * 環境変数に基づいてOpenAIモデル名を取得します。
-   *
-   * @param defaultModelName - デフォルトのモデル名。
-   * @returns 環境変数 `OPENAI_API_KEY` が設定されている場合は  `defaultModelName`  を返し、
-   *          そうでない場合は環境変数 `OPENAI_MODEL_NAME` を返します。
-   */
-  getOpenAIModelName(defaultModelName) {
-    return (process.env["OPENAI_API_KEY"] ? void 0 : process.env["OPENAI_MODEL_NAME"]) && defaultModelName;
-  }
-  // eslint-disable-next-line max-lines-per-function
-  constructor(providerConfig, mattermostClient) {
-    this.mattermostCLient = mattermostClient;
-    const yamlConfig = getConfig();
-    this.MAX_TOKENS = providerConfig.maxTokens ?? Number(yamlConfig.OPENAI_MAX_TOKENS ?? process.env["OPENAI_MAX_TOKENS"] ?? 2e3);
-    this.TEMPERATURE = providerConfig.temperature ?? Number(yamlConfig.OPENAI_TEMPERATURE ?? process.env["OPENAI_TEMPERATURE"] ?? 1);
-    this.MAX_PROMPT_TOKENS = providerConfig.maxPromptTokens ?? Number(yamlConfig.MAX_PROMPT_TOKENS ?? process.env["MAX_PROMPT_TOKENS"] ?? 2e3);
-    this.REASONING_EFFORT = providerConfig.reasoningEffort;
-    this.name = providerConfig.name;
-    if (!this.name) {
-      openAILog.error("No name. Ignore provider config", providerConfig);
-      throw new Error("No Ignore provider config");
-    }
-    let chatProvider;
-    let imageProvider = void 0;
-    let visionProvider = void 0;
-    switch (providerConfig.type) {
-      case "azure": {
-        const apiVersion = providerConfig.apiVersion ?? process.env["AZURE_OPENAI_API_VERSION"] ?? "2024-10-21";
-        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "AZURE_OPENAI_API_KEY");
-        const instanceName = providerConfig.instanceName ?? process.env["AZURE_OPENAI_API_INSTANCE_NAME"];
-        if (!instanceName) {
-          openAILog.error(`${this.name} No Azure instanceName. Ignore provider config`, providerConfig);
-          throw new Error(`${this.name} No Azure instanceName. Ignore provider config`);
-        }
-        const deploymentName = providerConfig.deploymentName ?? process.env["AZURE_OPENAI_API_DEPLOYMENT_NAME"];
-        if (!deploymentName) {
-          openAILog.error(`${this.name} No Azure deploymentName. Ignore provider config`, providerConfig);
-          throw new Error(`${this.name} No Azure deploymentName. Ignore provider config`);
-        }
-        chatProvider = new OpenAIAdapter({
-          apiKey,
-          baseURL: `https://${instanceName}.openai.azure.com/openai/deployments/${deploymentName}`,
-          //  新しいエンドポイントは以下だけど上のURLでも行ける
-          //        https://${instanceName}.cognitiveservices.azure.com/openai/deployments/${deploymentName}
-          defaultQuery: { "api-version": apiVersion },
-          defaultHeaders: { "api-key": apiKey }
-        });
-        const imageKey = providerConfig.imageKey ?? process.env["AZURE_OPENAI_API_IMAGE_KEY"];
-        const imageInstanceName = providerConfig.imageInstanceName ?? process.env["AZURE_OPENAI_API_IMAGE_INSTANCE_NAME"] ?? instanceName;
-        const imageDeploymentName = providerConfig.imageDeploymentName ?? process.env["AZURE_OPENAI_API_IMAGE_DEPLOYMENT_NAME"];
-        if (imageKey && imageDeploymentName) {
-          imageProvider = new OpenAIAdapter({
-            // Azureは東海岸(dall-e-2)やスエーデン(dall-e-3)しかDALL-Eが無いので新規に作る
-            apiKey: imageKey,
-            baseURL: `https://${imageInstanceName}.openai.azure.com/openai/deployments/${imageDeploymentName}`,
-            defaultQuery: { "api-version": apiVersion },
-            defaultHeaders: { "api-key": imageKey }
-          });
-        }
-        const visionKey = providerConfig.visionKey ?? process.env["AZURE_OPENAI_API_VISION_KEY"];
-        const visionInstanceName = providerConfig.visionInstanceName ?? process.env["AZURE_OPENAI_API_VISION_INSTANCE_NAME"] ?? instanceName;
-        const visionDeploymentName = providerConfig.visionDeploymentName ?? process.env["AZURE_OPENAI_API_VISION_DEPLOYMENT_NAME"] ?? deploymentName;
-        if (visionKey && visionDeploymentName) {
-          visionProvider = new OpenAIAdapter({
-            apiKey: visionKey,
-            baseURL: `https://${visionInstanceName}.openai.azure.com/openai/deployments/${visionDeploymentName}`,
-            defaultQuery: { "api-version": apiVersion },
-            defaultHeaders: { "api-key": visionKey }
-          });
-        }
-        providerConfig.visionInstanceName = visionInstanceName;
-        providerConfig.visionDeploymentName = visionDeploymentName;
-        ({ imageProvider, visionProvider } = this.setImageAndVisionProvider(
-          providerConfig,
-          imageProvider,
-          visionProvider
-        ));
-        this.provider = {
-          chatProvider,
-          imageProvider,
-          visionProvider,
-          type: providerConfig.type,
-          modelName: providerConfig.modelName ?? deploymentName ?? "gpt-4o-mini",
-          imageModelName: providerConfig.imageModelName ?? imageDeploymentName ?? "dall-e-3",
-          visionModelName: providerConfig.visionModelName ?? visionDeploymentName ?? "gpt-4v"
-        };
-        break;
-      }
-      case "anthropic": {
-        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "ANTHROPIC_API_KEY");
-        chatProvider = new AnthropicAdapter({ apiKey });
-        ({ imageProvider, visionProvider } = this.setImageAndVisionProvider(
-          providerConfig,
-          imageProvider,
-          visionProvider
-        ));
-        this.provider = {
-          chatProvider,
-          imageProvider,
-          visionProvider,
-          type: providerConfig.type,
-          modelName: providerConfig.modelName ?? this.getOpenAIModelName("claude-3-opus-20240229"),
-          imageModelName: providerConfig.imageModelName,
-          visionModelName: providerConfig.visionModelName
-        };
-        break;
-      }
-      case "cohere": {
-        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "COHERE_API_KEY");
-        chatProvider = new CohereAdapter({ apiKey });
-        ({ imageProvider, visionProvider } = this.setImageAndVisionProvider(
-          providerConfig,
-          imageProvider,
-          visionProvider
-        ));
-        this.provider = {
-          chatProvider,
-          imageProvider,
-          visionProvider,
-          type: providerConfig.type,
-          modelName: providerConfig.modelName ?? this.getOpenAIModelName("command-r-plus"),
-          imageModelName: providerConfig.imageModelName,
-          visionModelName: providerConfig.visionModelName
-        };
-        break;
-      }
-      case "google": {
-        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "GOOGLE_API_KEY");
-        const modelName = providerConfig.modelName ?? this.getOpenAIModelName("gemini-1.5-flash");
-        chatProvider = new GoogleGeminiAdapter(apiKey, modelName, this.MAX_TOKENS, this.TEMPERATURE);
-        if (!imageProvider) {
-          imageProvider = chatProvider;
-        }
-        visionProvider = void 0;
-        this.provider = {
-          chatProvider,
-          imageProvider,
-          visionProvider,
-          type: providerConfig.type,
-          modelName,
-          imageModelName: providerConfig.imageModelName,
-          visionModelName: providerConfig.visionModelName
-        };
-        break;
-      }
-      case "openai": {
-        const apiKey = this.compensateAPIKey(providerConfig.apiKey, "OPENAI_API_KEY");
-        chatProvider = new OpenAIAdapter({
-          apiKey,
-          baseURL: providerConfig.apiBase ?? process.env["OPENAI_API_BASE"]
-        });
-        if (providerConfig.imageModelName) {
-          imageProvider = chatProvider;
-        }
-        if (providerConfig.visionModelName) {
-          visionProvider = chatProvider;
-        }
-        this.provider = {
-          chatProvider,
-          imageProvider,
-          visionProvider,
-          type: providerConfig.type,
-          modelName: providerConfig.modelName ?? process.env["OPENAI_MODEL_NAME"] ?? "gpt-4o-mini",
-          imageModelName: providerConfig.imageModelName ?? process.env["OPENAI_IMAGE_MODEL_NAME"] ?? "dall-e-3",
-          visionModelName: providerConfig.visionModelName ?? process.env["OPENAI_VISION_MODEL_NAME"] ?? "gpt-4v"
-        };
-        break;
-      }
-      default:
-        openAILog.error(`${this.name} Unknown LLM provider type. ${providerConfig.type}`, providerConfig);
-        throw new Error(`${this.name} Unknown LLM provider type. ${providerConfig.type}`);
-    }
-    openAILog.debug(`AIProvider: ${providerConfig.name}`, this.provider.type, this.provider.modelName);
-  }
-  compensateAPIKey(apiKey, envName) {
-    apiKey = apiKey ?? process.env[envName];
-    if (!apiKey) {
-      openAILog.error(`${this.name} No apiKey. Ignore provider config`);
-      throw new Error(`${this.name} No apiKey. Ignore provider config`);
-    }
-    return apiKey;
-  }
-  setImageAndVisionProvider(providerConfig, imageProvider, visionProvider) {
-    if (!providerConfig.imageModelName && !providerConfig.imageDeploymentName && imageProvider) {
-      imageProvider = void 0;
-    }
-    if (!providerConfig.visionModelName && !providerConfig.visionDeploymentName && visionProvider) {
-      visionProvider = void 0;
-    }
-    return { imageProvider, visionProvider };
-  }
-  getAIProvider() {
-    return this.provider;
-  }
-  getAIProvidersName() {
-    return this.name;
-  }
-  registerChatPlugin(plugin) {
-    this.plugins.set(plugin.key, plugin);
-    this.functions.push({
-      name: plugin.key,
-      description: plugin.description,
-      parameters: {
-        type: "object",
-        properties: plugin.pluginArguments,
-        required: plugin.requiredArguments
-      }
-    });
-  }
-  /**
-   * Sends a message thread to chatGPT. The response can be the message responded by the AI model or the result of a
-   * plugin call.
-   * @param messages The message thread which should be sent.
-   * @param msgData The message data of the last mattermost post representing the newest message in the message thread.
-   * @param provider The provider to use for the chat completion.
-   */
-  // eslint-disable-next-line max-lines-per-function
-  async continueThread(messages, msgData) {
-    this.logMessages(messages);
-    const NO_MESSAGE = "Sorry, but it seems I found no valid response.";
-    const completionTokensDetails = {
-      // accepted_prediction_tokens: 0,
-      // audio_tokens: 0,
-      reasoning_tokens: 0
-      // rejected_prediction_tokens: 0,
-    };
-    const promptTokensDetails = {
-      // audio_tokens: 0,
-      cached_tokens: 0
-    };
-    let aiResponse = {
-      message: NO_MESSAGE,
-      usage: {
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        completion_tokens_details: completionTokensDetails,
-        prompt_tokens_details: promptTokensDetails,
-        total_tokens: 0
-      },
-      model: ""
-    };
-    let maxChainLength = 7;
-    const missingPlugins = /* @__PURE__ */ new Set();
-    let isIntermediateResponse = true;
-    while (isIntermediateResponse && maxChainLength-- > 0) {
-      const { responseMessage, finishReason, usage, model, images } = await this.createChatCompletion(
-        messages,
-        this.functions
-      );
-      this.makeModelAndUsage(aiResponse, model, usage);
-      if (images) {
-        openAILog.debug("Image files: ", images.length);
-        for (const image of images) {
-          const form = new FormData();
-          form.append("channel_id", msgData.post.channel_id);
-          form.append("files", image, "image.png");
-          const response = await this.getMattermostClient().getClient().uploadFile(form);
-          openAILog.trace("Uploaded a file with id", response.file_infos[0].id);
-          const fileId = response.file_infos[0].id;
-          aiResponse.message = "";
-          aiResponse.props = {
-            originalMessage: ""
-          };
-          if (!aiResponse.fileId) {
-            aiResponse.fileId = [];
-          }
-          aiResponse.fileId.push(fileId);
-        }
-      }
-      if (responseMessage) {
-        if (responseMessage.function_call) {
-          if (!responseMessage.tool_calls) {
-            responseMessage.tool_calls = [];
-          }
-          responseMessage.tool_calls.push({
-            id: "",
-            type: "function",
-            function: responseMessage.function_call
-          });
-        }
-        if (responseMessage.tool_calls) {
-          await Promise.all(
-            responseMessage.tool_calls.map(async (tool_call) => {
-              if (tool_call.type !== "function") {
-                return;
-              }
-              const pluginName = tool_call.function.name;
-              openAILog.trace({ pluginName });
-              try {
-                const plugin = this.plugins.get(pluginName);
-                if (plugin) {
-                  aiResponse.model += pluginName + " ";
-                  const pluginArguments = JSON.parse(tool_call.function.arguments ?? "[]");
-                  openAILog.trace({ plugin, pluginArguments });
-                  const pluginResponse = await plugin.runPlugin(pluginArguments, msgData, this);
-                  openAILog.trace({ pluginResponse });
-                  if (pluginResponse.intermediate) {
-                    messages.push({
-                      role: "function",
-                      //ChatCompletionResponseMessageRoleEnum.Function,
-                      name: pluginName,
-                      content: pluginResponse.message
-                    });
-                    return;
-                  }
-                  pluginResponse.model = aiResponse.model;
-                  pluginResponse.usage = aiResponse.usage;
-                  aiResponse = pluginResponse;
-                } else {
-                  if (!missingPlugins.has(pluginName)) {
-                    missingPlugins.add(pluginName);
-                    openAILog.debug({
-                      error: "Missing plugin " + pluginName,
-                      pluginArguments: tool_call.function.arguments
-                    });
-                    messages.push({
-                      role: "system",
-                      content: `There is no plugin named '${pluginName}' available. Try without using that plugin.`
-                    });
-                    return;
-                  } else {
-                    openAILog.debug({ messages });
-                    aiResponse.message = `Sorry, but it seems there was an error when using the plugin \`\`\`${pluginName}\`\`\`.`;
-                  }
-                }
-              } catch (e) {
-                openAILog.debug({ messages, error: e });
-                aiResponse.message = `Sorry, but it seems there was an error when using the plugin \`\`\`${pluginName}\`\`\`.`;
-              }
-            })
-          );
-        } else if (responseMessage.content) {
-          if (NO_MESSAGE === aiResponse.message) {
-            aiResponse.message = responseMessage.content;
-          } else {
-            aiResponse.message += responseMessage.content;
-          }
-          if (finishReason === "length") {
-            messages.push({
-              role: "assistant",
-              content: responseMessage.content
-            });
-            continue;
-          }
-        }
-      }
-      isIntermediateResponse = false;
-    }
-    return aiResponse;
-  }
-  makeModelAndUsage(aiResponse, model, usage) {
-    aiResponse.model += model + " ";
-    if (usage && aiResponse.usage) {
-      aiResponse.usage.prompt_tokens += usage.prompt_tokens;
-      aiResponse.usage.prompt_tokens_details.cached_tokens += usage?.prompt_tokens_details?.cached_tokens ? usage.prompt_tokens_details.cached_tokens : 0;
-      aiResponse.usage.completion_tokens += usage.completion_tokens;
-      aiResponse.usage.completion_tokens_details.reasoning_tokens += usage?.completion_tokens_details?.reasoning_tokens ? usage.completion_tokens_details.reasoning_tokens : 0;
-      aiResponse.usage.total_tokens += usage.total_tokens;
-    }
-  }
-  /**
-   * Logs the provided messages array after serializing and shortening long image URLs.
-   *
-   * @param {OpenAI.Chat.Completions.ChatCompletionMessageParam[]} messages - An array of chat completion messages.
-   */
-  logMessages(messages) {
-    openAILog.trace(
-      "messages: ",
-      //シリアライズでDeep Copy
-      JSON.parse(JSON.stringify(messages)).map((message) => {
-        if (typeof message.content !== "string") {
-          message.content?.forEach((content) => {
-            const url = shortenString(content.image_url?.url);
-            if (url) {
-              ;
-              content.image_url.url = url;
-            }
-          });
-        }
-        return message;
-      })
-    );
-  }
-  /**
-   * Creates a openAI chat model response.
-   * @param messages The message history the response is created for.
-   * @param functions Function calls which can be called by the openAI model
-   * @param provider The provider to use for the chat completion.
-   *
-   */
-  async createChatCompletion(messages, functions = void 0) {
-    let useTools = true;
-    const currentProvider = this.getAIProvider();
-    let currentOpenAi = currentProvider.chatProvider;
-    let currentModel = currentProvider.modelName;
-    if (currentProvider.type === "anthropic") {
-      useTools = false;
-    } else if (currentProvider.visionModelName) {
-      messages.some((message) => {
-        if (typeof message.content !== "string") {
-          if (currentProvider.visionModelName.indexOf("gpt-4v") >= 0) {
-            useTools = false;
-          }
-          if (currentProvider.visionProvider) {
-            currentOpenAi = currentProvider.visionProvider;
-          }
-          currentModel = currentProvider.visionModelName;
-          return true;
-        }
-      });
-    }
-    const chatCompletionOptions = {
-      model: currentModel,
-      messages,
-      temperature: this.TEMPERATURE
-    };
-    if (currentModel.startsWith("o1") || currentModel.startsWith("o3")) {
-      chatCompletionOptions.max_completion_tokens = this.MAX_TOKENS;
-      if (this.REASONING_EFFORT) {
-        chatCompletionOptions.reasoning_effort = this.REASONING_EFFORT;
-      }
-    } else {
-      chatCompletionOptions.max_tokens = this.MAX_TOKENS;
-    }
-    if (functions && useTools) {
-      if (currentModel.indexOf("gpt-3") >= 0) {
-        chatCompletionOptions.functions = functions;
-        chatCompletionOptions.function_call = "auto";
-      } else {
-        chatCompletionOptions.tools = functions.map((func) => ({ type: "function", function: func }));
-        chatCompletionOptions.tool_choice = "auto";
-      }
-    }
-    this.logChatCompletionsCreateParameters(chatCompletionOptions);
-    const ret = await currentOpenAi.createMessage(chatCompletionOptions);
-    const chatCompletion = ret.response;
-    openAILog.trace({ chatCompletion });
-    return {
-      responseMessage: chatCompletion.choices?.[0]?.message,
-      usage: chatCompletion.usage,
-      model: chatCompletion.model,
-      finishReason: chatCompletion.choices?.[0]?.finish_reason,
-      images: ret.images
-    };
-  }
-  /**
-   * Logs the parameters used for creating a chat completion in OpenAI.
-   *
-   * @param chatCompletionOptions - The options provided to create a chat completion.
-   */
-  logChatCompletionsCreateParameters(chatCompletionOptions) {
-    openAILog.trace("chat.completions.create() Parameters", {
-      model: chatCompletionOptions.model,
-      max_tokens: chatCompletionOptions.max_tokens,
-      temperature: chatCompletionOptions.temperature,
-      function_call: chatCompletionOptions.function_call,
-      functions: chatCompletionOptions.functions?.map(
-        (func) => `${func.name}(${this.toStringParameters(func.parameters)}): ${func.description}`
-      ),
-      tools_choice: chatCompletionOptions.tool_choice,
-      tools: chatCompletionOptions.tools?.map(
-        (tool) => `${tool.type} ${tool.function.name}(${this.toStringParameters(tool.function.parameters)}): ${tool.function.description}`
-      )
-    });
-  }
-  // Function Parametersのプロパティを文字列に展開する
-  toStringParameters(parameters) {
-    if (!parameters) {
-      return "";
-    }
-    let string = "";
-    const props = parameters.properties;
-    for (const paramKey in props) {
-      if (string.length > 0) {
-        string += ", ";
-      }
-      string += `${paramKey}:${props[paramKey].type}`;
-    }
-    return string;
-  }
-  /**
-   * Creates a openAI DALL-E response.
-   * @param prompt The image description provided to DALL-E.
-   */
-  async createImage(prompt) {
-    const currentProvider = this.getAIProvider();
-    const createImageOptions = {
-      model: currentProvider.imageModelName,
-      prompt,
-      n: 1,
-      size: "1024x1024",
-      //Must be one of 256x256, 512x512, or 1024x1024 for dall-e-2. Must be one of 1024x1024, 1792x1024, or 1024x1792 for dall-e-3 models.
-      quality: "standard",
-      //"hd", $0.080/枚=1枚12円で倍額
-      response_format: "b64_json"
-    };
-    openAILog.trace({ createImageOptions });
-    let image;
-    if (currentProvider.type !== "azure" || currentProvider.imageModelName !== "dall-e-2") {
-      image = await currentProvider.imageProvider.imagesGenerate(createImageOptions);
-    } else {
-      image = await currentProvider.imageProvider.imagesGenerate(createImageOptions);
-    }
-    const dataTmp = image.data?.[0]?.b64_json;
-    if (dataTmp) {
-      image.data[0].b64_json = shortenString(dataTmp);
-    }
-    openAILog.trace("images.generate", { image });
-    if (dataTmp) {
-      image.data[0].b64_json = dataTmp;
-    }
-    return image.data?.[0]?.b64_json;
   }
 };
 

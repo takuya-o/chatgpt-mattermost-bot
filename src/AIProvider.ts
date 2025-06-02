@@ -40,17 +40,32 @@ export class AIAdapter {
         message = openAImessage.content
       } else {
         openAImessage.content.forEach(content => {
-          const contentPartText = content as OpenAI.Chat.Completions.ChatCompletionContentPartText
-          if (contentPartText.type === 'text') {
+          if (content.type === 'text') {
+            const contentPartText = content as OpenAI.Chat.Completions.ChatCompletionContentPartText
             message += contentPartText.text
-          } else {
-            const conteentPartImage = content as OpenAI.Chat.Completions.ChatCompletionContentPartImage
+          } else if (content.type === 'image_url') {
+            const contentPartImage = content as OpenAI.Chat.Completions.ChatCompletionContentPartImage
             // image_url なら無視
+            log.debug('Not support man image_url', contentPartImage.type, shortenString(contentPartImage.image_url.url))
+          } else if (content.type === 'file') {
+            const contentPartFile = content as OpenAI.Chat.Completions.ChatCompletionContentPart.File
+            // ファイルは無視
             log.debug(
-              'Not support man image_url',
-              conteentPartImage.type,
-              shortenString(conteentPartImage.image_url.url),
+              'Not support file',
+              contentPartFile.type,
+              contentPartFile.file.filename,
+              shortenString(contentPartFile.file.file_data),
             )
+          } else if (content.type === 'input_audio') {
+            const contentPartAudio = content as OpenAI.Chat.Completions.ChatCompletionContentPartInputAudio
+            // input_audio なら無視
+            log.debug(
+              'Not support input_audio',
+              contentPartAudio.type,
+              shortenString(contentPartAudio.input_audio.data),
+            )
+          } else {
+            log.warn('Unknown content type:', content.type, content)
           }
         })
       }

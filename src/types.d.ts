@@ -24,8 +24,8 @@ export type AiResponse = {
 
 export type ProviderConfig = {
   name: string
-  mattermostUrl: string
-  mattermostToken: string
+  mattermostUrl?: string
+  mattermostToken?: string
   type: string
   apiKey: string
   apiBase: string
@@ -41,11 +41,23 @@ export type ProviderConfig = {
   imageKey: string
   imageInstanceName: string
   imageDeploymentName: string
-  maxTokens: number
-  temperature: number
-  maxPromptTokens: number
-  reasoningEffort: OpenAI.Chat.Completions.ChatCompletionReasoningEffort | undefined
-  plugins: string
+  maxTokens?: number
+  temperature?: number
+  maxPromptTokens?: number
+  reasoningEffort: OpenAI.Chat.Completions.ChatCompletionReasoningEffort
+  plugins?: string
+}
+
+// 設定ファイルの型を定義
+export type ConfigFile = {
+  bots: ProviderConfig[]
+  BOT_CONTEXT_MSG: string
+  BOT_INSTRUCTION: string
+  OPENAI_MAX_TOKENS: number
+  OPENAI_TEMPERATURE: number
+  MAX_PROMPT_TOKENS: number
+  MATTERMOST_URL: string
+  PLUGINS: string
 }
 
 export type AIProviders = {

@@ -55,7 +55,7 @@ export class GraphPlugin extends PluginBase<GraphPluginArgs> {
       message: 'Sorry, I could not execute the graph plugin.',
     }
 
-    const chatmessages: OpenAI.Chat.CreateChatCompletionRequestMessage[] = [
+    const chatmessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       {
         role: 'system' as const, //ChatCompletionRequestMessageRoleEnum.System,
         content: this.VISUALIZE_DIAGRAM_INSTRUCTIONS,

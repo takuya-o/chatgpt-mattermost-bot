@@ -1,3 +1,4 @@
+/* eslint-disable max-lines */
 import { AIAdapter, AIProvider, shortenString } from '../AIProvider.js'
 import {
   Candidate,
@@ -155,8 +156,11 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
   }
 
   private shortenLongString(str: string) {
-    // ""で囲まれた1024文字以上を切り詰める
-    const regex = /"(.*?)"/g
+    // エスケープされていないダブルクオートで囲まれた1024文字以上を切り詰める
+    // (?<!\\) で直前がバックスラッシュでないことを保証
+    // [^"\\] でダブルクオートとバックスラッシュ以外を許可
+    // (?:\\.|[^"\\])* でエスケープされた文字またはダブルクオート/バックスラッシュ以外を繰り返し許可
+    const regex = /"((?:\\.|[^"\\])*)"/g
     return str.replace(regex, function (match, content) {
       if (content.length > 1024) {
         return `"${content.slice(0, 1024)}..."`
@@ -165,6 +169,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       }
     })
   }
+
   private createChoices(candidates: Candidate[] | undefined) {
     //レスポンスメッセージの詰替え
     // OpenAI のレスポンスメッセージは "choices": [{
@@ -369,7 +374,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
           break
       }
     })
-    log.trace('currentMessages():', this.mapShotenInlineData(currentMessages))
+    //requestで出るので log.trace('currentMessages():', this.mapShotenInlineData(currentMessages))
     return currentMessages
   }
   private mapShotenInlineData(contents: Content[]): Content[] {
@@ -393,9 +398,16 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
             data: shortenString(part.inlineData.data) ?? '',
           },
         }
+      } else if (part.fileData) {
+        newPart = {
+          fileData: {
+            fileUri: part.fileData.fileUri,
+            mimeType: part.fileData.mimeType,
+          },
+        }
       } else {
         log.error('Unexpected Part type', part)
-        throw new Error(`Unexpected Part type ${part}`)
+        newPart = part //知らないものなので、とりあえずそのまま返す
       }
       return newPart
     })
@@ -420,14 +432,13 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
         } else if (contentPartText.type === 'image_url') {
           const conteentPartImage = contentPart as OpenAI.Chat.Completions.ChatCompletionContentPartImage
           // image_url
-          const dataURL = conteentPartImage.image_url.url
-          // dataURL形式: 'data:' + mimeType + ';base64,' + base64
-          const mimeEnd = dataURL.indexOf(';')
-          // MIME タイプ。使用できるタイプは「image/png」「image/jpeg」「image/heic」「image/heif」「image/webp」です
-          const mimeType = dataURL.substring('data:'.length, mimeEnd)
-          const data = dataURL.substring(mimeEnd + ';base64,'.length)
-          parts.push({ inlineData: { mimeType, data } })
-          //下のcreateParts():でも出る log.trace(`Converted image_url ${mimeType}, ${shortenString(data)}`)
+          const dataURL = conteentPartImage.image_url?.url
+          this.createPart(dataURL, parts)
+        } else if (contentPartText.type === 'file') {
+          const conteentPartFile = contentPart as OpenAI.Chat.Completions.ChatCompletionContentPart.File
+          // file
+          const dataURL = conteentPartFile.file.file_data! // いつもidではなくdataがくる
+          this.createPart(dataURL, parts)
         } else {
           log.error(`Ignore unsupported message ${contentPartText.type} type`, contentPartText)
         }
@@ -435,6 +446,71 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
     }
     //位置階層上でcurrentMessages()として出る log.trace('createParts():', this.mapShotenInlineDataInParts(parts) )
     return parts
+  }
+
+  private createPart(dataURL: string, parts: Part[]) {
+    if (dataURL.startsWith('http')) {
+      // URL形式: 'https://example.com/image.png'だった
+      // 拡張子とMIMEタイプの対応表
+      const extensionMimeMap: Record<string, string> = {
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.heic': 'image/heic',
+        '.heif': 'image/heif',
+        '.webp': 'image/webp',
+        '.gif': 'image/gif',
+        '.mp4': 'video/mp4',
+        '.mpeg': 'video/mpeg',
+        '.mov': 'video/mov',
+        '.avi': 'video/avi',
+        '.x-flv': 'video/x-flv',
+        '.mpg': 'video/mpg',
+        '.webm': 'video/webm',
+        '.wmv': 'video/wmv',
+        '.3gp': 'video/3gpp',
+        '.3gpp': 'video/3gpp',
+        '.pdf': 'application/pdf',
+        '.js': 'application/x-javascript',
+        '.py': 'application/x-python',
+        '.txt': 'text/plain',
+        '.html': 'text/html',
+        '.css': 'text/css',
+        '.md': 'text/md',
+        '.csv': 'text/csv',
+        '.xml': 'text/xml',
+        '.rtf': 'text/rtf',
+        '.json': 'application/json',
+      }
+      let mimeType: string | undefined = undefined // YouTube動画はMimeTypeいらない
+
+      // 拡張子でMIMEタイプを判定
+      const matched = Object.keys(extensionMimeMap).find(ext => dataURL.toLowerCase().endsWith(ext))
+      if (matched) {
+        mimeType = extensionMimeMap[matched]
+      }
+      parts.push({ fileData: { fileUri: dataURL, mimeType } })
+    } else {
+      // dataURL形式: 'data:' + mimeType + ';base64,' + base64
+      const mimeEnd = dataURL.indexOf(';')
+      // MIME タイプ。使用できるタイプは「image/png」「image/jpeg」「image/heic」「image/heif」「image/webp」です
+      // https://ai.google.dev/gemini-api/docs/document-processing?hl=ja&lang=node
+      // Gemini は最大 1,000 ページのドキュメントをサポートしています。ドキュメント ページは、次のいずれかのテキストデータ MIME タイプである必要があります。
+      // PDF - application/pdf
+      // JavaScript - application/x-javascript、text/javascript
+      // Python - application/x-python、text/x-python
+      // TXT - text/plain
+      // HTML - text/html
+      // CSS - text/css
+      // Markdown - text/md
+      // CSV - text/csv
+      // XML - text/xml
+      // RTF - text/rtf
+      const mimeType = dataURL.substring('data:'.length, mimeEnd)
+      const data = dataURL.substring(mimeEnd + ';base64,'.length)
+      parts.push({ inlineData: { mimeType, data } })
+      //下のcreateParts():でも出る log.trace(`Converted image_url ${mimeType}, ${shortenString(data)}`)
+    }
   }
 
   private async getUsage(history: Content[], responseTokenCount: number): Promise<OpenAI.Completions.CompletionUsage> {

@@ -210,12 +210,12 @@ export class CohereAdapter extends AIAdapter implements AIProvider {
       } else if (message.role === 'system') {
         chatHistory.push({
           role: 'SYSTEM',
-          message: message.content as string,
+          message: this.getMessage(message.content),
         })
       } else if (message.role === 'assistant') {
         chatHistory.push({
           role: 'CHATBOT',
-          message: (message.content ?? '') as string,
+          message: this.getMessage(message.content ?? ''),
         })
       } else {
         // "function" | "tool"
@@ -224,6 +224,32 @@ export class CohereAdapter extends AIAdapter implements AIProvider {
     })
     //log.debug('Cohere chat history', chatHistory)
     return chatHistory
+  }
+  private getMessage(
+    content:
+      | string
+      | Array<
+          | OpenAI.Chat.Completions.ChatCompletionContentPartText
+          | OpenAI.Chat.Completions.ChatCompletionContentPartRefusal
+        >,
+  ): string {
+    let message = ''
+    if (typeof content === 'string') {
+      message = content
+    } else {
+      content.forEach(content => {
+        if (content.type === 'text') {
+          const contentPartText = content as OpenAI.Chat.Completions.ChatCompletionContentPartText
+          message += contentPartText.text
+        } else if (content.type === 'refusal') {
+          const contentPartRefusal = content as OpenAI.Chat.Completions.ChatCompletionContentPartRefusal
+          message += 'refusal: ' + contentPartRefusal.refusal
+        } else {
+          log.warn('getMessage(): Unknown content type:', content)
+        }
+      })
+    }
+    return message
   }
 
   async imagesGenerate(_imageGeneratePrams: OpenAI.Images.ImageGenerateParams): Promise<OpenAI.Images.ImagesResponse> {

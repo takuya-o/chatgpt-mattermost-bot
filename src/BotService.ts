@@ -1,5 +1,7 @@
+/* eslint-disable max-lines */
 //import 'isomorphic-fetch'
 import { JSONMessageData, MattermostMessageData } from './types.js'
+import { OpenGraphMetadata, Post } from '@mattermost/types/lib/posts'
 import { botLog, matterMostLog } from './logging.js'
 import { ExitPlugin } from './plugins/ExitPlugin.js'
 // the mattermost library uses FormData - so here is a polyfill
@@ -12,7 +14,6 @@ import { MessageCollectPlugin } from './plugins/MessageCollectPlugin.js'
 import OpenAI from 'openai'
 import { OpenAIWrapper } from './OpenAIWrapper.js'
 import { PluginBase } from './plugins/PluginBase.js'
-import { Post } from '@mattermost/types/lib/posts'
 import { UnuseImagesPlugin } from './plugins/UnuseImagesPlugin.js'
 import { WebSocketMessage } from '@mattermost/client'
 import { getConfig } from './config.js'
@@ -80,7 +81,7 @@ export class BotService {
   // クライアントメッセージを処理する
   async onClientMessage(msg: WebSocketMessage<JSONMessageData>) {
     if ((msg.event !== 'posted' && msg.event !== 'post_edited') || !this.meId) {
-      matterMostLog.debug('Event not posted ', msg.event, { msg })
+      matterMostLog.debug(`Event not posted: ${msg.event}`)
       return
     }
 
@@ -157,14 +158,34 @@ export class BotService {
                 file.height,
               )
               if (url) {
-                content.push(
-                  { type: 'image_url', image_url: { url } }, //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
-                )
+                if (
+                  [
+                    'pdf',
+                    'x-javascript',
+                    'javascript',
+                    'x-python',
+                    'plain',
+                    'html',
+                    'css',
+                    'md',
+                    'csv',
+                    'xml',
+                    'rtf',
+                  ].includes(file.mime_type.replace(/^.+\//, ''))
+                ) {
+                  // ドキュメントファイル
+                  content.push({ type: 'file', file: { filename: file.name, file_data: url } })
+                } else {
+                  content.push(
+                    { type: 'image_url', image_url: { url } }, //detail?: 'auto' | 'low' | 'high' はdefaultのautoで
+                  )
+                }
               } //画像取得が失敗した場合は無視
             }),
           )
         }
-        // メッセージにURLを埋め込んだ内部画像URL
+        const excludeImage: string[] = []
+        // メッセージにURLを埋め込んだ内部画像や動画のURL
         if (threadPost.metadata.embeds) {
           for (const embed of threadPost.metadata.embeds) {
             if (embed.url && embed.type === 'link') {
@@ -172,6 +193,19 @@ export class BotService {
               if (url) {
                 content.push({ type: 'image_url', image_url: { url } })
               }
+            } else if (
+              embed.type === 'opengraph' &&
+              embed.url &&
+              (embed.url.startsWith('https://youtu.be/') || embed.url.startsWith('https://www.youtube.com/'))
+              // 24分だと437,195トークン>32,768トークン 'gemini-2.0-flash-preview-image-generation'
+              // <1,048,576 'gemini-2.5-flash-preview-05-20'
+            ) {
+              const data = embed.data as OpenGraphMetadata | undefined
+              if (data?.type === 'opengraph' && data?.images?.[0]?.secure_url) {
+                // YouTubeのサムネイルは画像から除くので除外リストに加える
+                excludeImage.push(data.images[0].secure_url)
+              }
+              content.push({ type: 'image_url', image_url: { url: embed.url } }) // OpenAIのimage_urlは、まだ動画のURLを受け付けないけど
             } else {
               botLog.warn(`Unsupported embed type: ${embed.type}. Skipping.`, embed)
             }
@@ -181,16 +215,21 @@ export class BotService {
         if (threadPost.metadata.images) {
           await Promise.all(
             Object.keys(threadPost.metadata.images).map(async url => {
-              const postImage = threadPost.metadata.images[url]
-              // GPT-4Vの解釈できてリーズナブルな画像形式とサイズに変換
-              url = await this.getBase64Image(
-                url,
-                this.mattermostClient.getClient().getToken(),
-                postImage.format,
-                postImage.width,
-                postImage.height,
-              ) // 元のURLもMattermostのURL
-              content.push({ type: 'image_url', image_url: { url } })
+              // urlがexcludeImageに含まれている場合はスキップ
+              if (!excludeImage.includes(url)) {
+                const postImage = threadPost.metadata.images[url]
+                // GPT-4Vの解釈できてリーズナブルな画像形式とサイズに変換
+                url = await this.getBase64Image(
+                  url,
+                  this.mattermostClient.getClient().getToken(),
+                  postImage.format,
+                  postImage.width,
+                  postImage.height,
+                ) // 元のURLもMattermostのURL
+                content.push({ type: 'image_url', image_url: { url } })
+              } else {
+                botLog.info(`Skipping image URL: ${url} as it is in the exclude list.`)
+              }
             }),
           )
         }
@@ -245,28 +284,38 @@ export class BotService {
       return ''
     }
     let buffer = Buffer.from((await response.arrayBuffer()) as ArrayBufferLike)
-    if (
-      !format ||
-      (['png', 'jpeg', 'webp', 'gif'].includes(format.replace(/^.+\//, '')) && (width <= 0 || height <= 0))
-    ) {
-      // mattermostがサイズを持っていなかったので実物から取る
-      const metadata = await sharp(buffer).metadata() //TODO:ビデオだった場合はsharpどうなるの?
-      width = metadata.width ?? 0
-      height = metadata.height ?? 0
-      format = metadata.format ?? '' //jpeg, png, webp, gif, svg
-    }
-    // sharp画像変換ライブラリの対応形式は    PNG, JPEG, WebP, GIF and AVIF
-    // https://www.npmjs.com/package/sharp
     // OpenAIのサポートしている画像形式はPNG, JPEG, WEBP, GIF
     // see: https://platform.openai.com/docs/guides/vision/what-type-of-files-can-i-upload
     // Geminiのサポートしている画像・ビデオ形式は
     // image/png image/jpeg   video/mov video/mpeg video/mp4 video/mpg video/avi video/wmv video/mpegps video/flv
     // https://cloud.google.com/vertex-ai/docs/generative-ai/model-reference/gemini?hl=ja
-    if (['mov', 'mpeg', 'mp4', 'mpg', 'avi', 'wmv', 'mpegps', 'flv'].includes(format.replace(/^.+\//, ''))) {
+    // Geminiのサポートしているドキュメント形式は
+    // https://ai.google.dev/gemini-api/docs/document-processing?hl=ja&lang=node 最大1,000ページ
+    if (
+      ['pdf', 'x-javascript', 'javascript', 'x-python', 'plain', 'html', 'css', 'md', 'csv', 'xml', 'rtf'].includes(
+        format.replace(/^.+\//, ''),
+      )
+    ) {
+      // ドキュメントファイル
+      matterMostLog.info(`Find Document file ${format} ${url}`)
+      format = this.toMimeType(format, 'text') // PDFはappliccation/pdfで来るから変換無いはず
+    } else if (['mov', 'mpeg', 'mp4', 'mpg', 'avi', 'wmv', 'mpegps', 'flv'].includes(format.replace(/^.+\//, ''))) {
       //ビデオ
       format = this.toMimeType(format, 'video')
     } else {
       // 画像
+      // sharp画像変換ライブラリの対応形式は    PNG, JPEG, WebP, GIF and AVIF
+      // https://www.npmjs.com/package/sharp
+      if (
+        !format ||
+        (['png', 'jpeg', 'webp', 'gif'].includes(format.replace(/^.+\//, '')) && (width <= 0 || height <= 0))
+      ) {
+        // mattermostがサイズを持っていなかったので実物から取る
+        const metadata = await sharp(buffer).metadata() //TODO:ビデオだった場合はsharpどうなるの?
+        width = metadata.width ?? 0
+        height = metadata.height ?? 0
+        format = metadata.format ?? '' //jpeg, png, webp, gif, svg
+      }
       if (!['png', 'jpeg', 'webp', 'gif'].includes(format.replace(/^.+\//, ''))) {
         matterMostLog.warn(`Unsupported image format: ${format}. Converting to JPEG.`)
         buffer = await sharp(buffer).jpeg().toBuffer()
