@@ -51,8 +51,26 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
     options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
   ): Promise<{ response: OpenAI.Chat.Completions.ChatCompletion; images: Blob[] }> {
     //These arrays are to maintain the history of the conversation
-    const systemInstruction = this.model.includes('image')
-      ? undefined // gemini-2.0-flash-preview-image-generation でシステムインストラクションを入れるとDeveloper instruction is not enabled エラー
+    const isImageSupported = [
+      // 画像対応のモデル
+      'models/gemini-2.0-flash-preview-image-generation',
+      'gemini-2.0-flash-exp-image-generation',
+      'gemini-2.0-flash-preview-image-generation',
+      //
+      'gemini-2.0-flash-exp',
+    ].some(model => this.model === model)
+    const isNotSupportedFunction = [
+      // 関数未対応のモデル
+      'models/gemini-2.0-flash-preview-image-generation',
+      'gemini-2.0-flash-exp-image-generation',
+      'gemini-2.0-flash-preview-image-generation',
+      //
+      'models/gemini-2.0-flash-lite',
+      'gemini-2.0-flash-lite',
+      'gemini-2.0-flash-exp',
+    ].some(model => this.model === model)
+    const systemInstruction = isImageSupported
+      ? undefined // gemini-2.0-flash-preview-image-generation などでシステムインストラクションを入れるとDeveloper instruction is not enabled エラー
       : this.createContents([options.messages.shift() as OpenAI.Chat.Completions.ChatCompletionMessageParam])[0]
     const currentMessages: Content[] = this.createContents(options.messages)
     const tool: Tool | undefined = this.createGeminiTool(options.tools, options.functions)
@@ -60,17 +78,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
     if (tool) {
       tools = [tool]
     }
-    if (
-      [
-        // 関数未対応のモデル
-        'models/gemini-2.0-flash-preview-image-generation',
-        'gemini-2.0-flash-exp-image-generation',
-        'gemini-2.0-flash-preview-image-generation',
-        //
-        'models/gemini-2.0-flash-lite',
-        'gemini-2.0-flash-lite',
-      ].some(model => this.model.includes(model))
-    ) {
+    if (isNotSupportedFunction) {
       tools = undefined
     }
     // const chat = this.generativeModel
@@ -92,7 +100,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
         //topP, TopK
         tools, // v1betaより
         //toolConfig?: ToolConfig;
-        responseModalities: this.model.includes('image') ? [Modality.IMAGE, Modality.TEXT] : [Modality.TEXT], // だめ[Modality.MODALITY_UNSPECIFIED],
+        responseModalities: isImageSupported ? [Modality.IMAGE, Modality.TEXT] : [Modality.TEXT], // だめ[Modality.MODALITY_UNSPECIFIED],
         //なくてもIMAGEできる responseMimeType: 'text/plain',
       },
     }

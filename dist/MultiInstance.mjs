@@ -486,22 +486,32 @@ var GoogleGeminiAdapter = class extends AIAdapter {
   }
   // eslint-disable-next-line max-lines-per-function
   async createMessage(options) {
-    const systemInstruction = this.model.includes("image") ? void 0 : this.createContents([options.messages.shift()])[0];
-    const currentMessages = this.createContents(options.messages);
-    const tool = this.createGeminiTool(options.tools, options.functions);
-    let tools = void 0;
-    if (tool) {
-      tools = [tool];
-    }
-    if ([
+    const isImageSupported = [
+      // 画像対応のモデル
+      "models/gemini-2.0-flash-preview-image-generation",
+      "gemini-2.0-flash-exp-image-generation",
+      "gemini-2.0-flash-preview-image-generation",
+      //
+      "gemini-2.0-flash-exp"
+    ].some((model) => this.model === model);
+    const isNotSupportedFunction = [
       // 関数未対応のモデル
       "models/gemini-2.0-flash-preview-image-generation",
       "gemini-2.0-flash-exp-image-generation",
       "gemini-2.0-flash-preview-image-generation",
       //
       "models/gemini-2.0-flash-lite",
-      "gemini-2.0-flash-lite"
-    ].some((model) => this.model.includes(model))) {
+      "gemini-2.0-flash-lite",
+      "gemini-2.0-flash-exp"
+    ].some((model) => this.model === model);
+    const systemInstruction = isImageSupported ? void 0 : this.createContents([options.messages.shift()])[0];
+    const currentMessages = this.createContents(options.messages);
+    const tool = this.createGeminiTool(options.tools, options.functions);
+    let tools = void 0;
+    if (tool) {
+      tools = [tool];
+    }
+    if (isNotSupportedFunction) {
       tools = void 0;
     }
     const request = {
@@ -519,7 +529,7 @@ var GoogleGeminiAdapter = class extends AIAdapter {
         tools,
         // v1betaより
         //toolConfig?: ToolConfig;
-        responseModalities: this.model.includes("image") ? [Modality.IMAGE, Modality.TEXT] : [Modality.TEXT]
+        responseModalities: isImageSupported ? [Modality.IMAGE, Modality.TEXT] : [Modality.TEXT]
         // だめ[Modality.MODALITY_UNSPECIFIED],
         //なくてもIMAGEできる responseMimeType: 'text/plain',
       }
