@@ -5,6 +5,11 @@
 
 ## Enhanced from the [original yGuy/chatgpt-mattermost-bot](https://github.com/yGuy/chatgpt-mattermost-bot)
 
+* Generate image and audio by Gemini
+  * Generate image support  with `gemini-2.0-flash-exp` and `gemini-2.0-flash-preview-image-generation`.
+  ![Screenshot of painting output](./painting-moning-beach.png)
+  * Support for audio generation with `gemini-2.5-flash-preview-tts` and `gemini-2.5-pro-preview-tts`, with MP3 output playable in mattermost.
+  ![Screenshot of mp3 output.](./gemini-tts.png)
 * Support for multiple bots in a single process. You no longer need to run multiple docker containers to use multiple LLMs.
 
   ![Screenshot of mattermost left panel.](./multiBotInstance.png )

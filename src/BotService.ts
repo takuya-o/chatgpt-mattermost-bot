@@ -153,7 +153,7 @@ export class BotService {
               const url = await this.getBase64Image(
                 originalUrl,
                 this.mattermostClient.getClient().getToken(),
-                file.mime_type,
+                file.mime_type || file.extension, // mime_typeがない場合は拡張子を使う
                 file.width,
                 file.height,
               )
@@ -302,6 +302,9 @@ export class BotService {
     } else if (['mov', 'mpeg', 'mp4', 'mpg', 'avi', 'wmv', 'mpegps', 'flv'].includes(format.replace(/^.+\//, ''))) {
       //ビデオ
       format = this.toMimeType(format, 'video')
+    } else if (['mp3', 'wav', 'ogg'].includes(format.replace(/^.+\//, ''))) {
+      // 音声 TTSでアシスタントに音声が入ることがあるので
+      format = this.toMimeType(format, 'audio')
     } else {
       // 画像
       // sharp画像変換ライブラリの対応形式は    PNG, JPEG, WebP, GIF and AVIF

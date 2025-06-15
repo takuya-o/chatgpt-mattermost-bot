@@ -1,4 +1,6 @@
+/* eslint-disable max-lines-per-function */
 /* eslint-disable max-lines */
+import * as lame from '@breezystack/lamejs'
 import { AIAdapter, AIProvider, shortenString } from '../AIProvider.js'
 import {
   Candidate,
@@ -17,6 +19,7 @@ import {
 } from '@google/genai'
 import { Log } from 'debug-level'
 import OpenAI from 'openai'
+//import wav from 'wav'
 
 Log.options({ json: true, colors: true })
 const log = new Log('Gemini')
@@ -46,7 +49,6 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
     this.baseURL = `https://generativelanguage.googleapis.com/v1beta/models/${model}:`
   }
 
-  // eslint-disable-next-line max-lines-per-function
   async createMessage(
     options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
   ): Promise<{ response: OpenAI.Chat.Completions.ChatCompletion; images: Blob[] }> {
@@ -57,10 +59,12 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       'gemini-2.0-flash-exp-image-generation',
       'gemini-2.0-flash-preview-image-generation',
       //
-      'gemini-2.0-flash-exp',
+      'gemini-2.0-flash-exp', // The support is not official
     ].some(model => this.model === model)
     const isNotSupportedFunction = [
       // 関数未対応のモデル
+      'gemini-2.5-pro-preview-tts',
+      'gemini-2.5-flash-preview-tts',
       'models/gemini-2.0-flash-preview-image-generation',
       'gemini-2.0-flash-exp-image-generation',
       'gemini-2.0-flash-preview-image-generation',
@@ -69,9 +73,24 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       'gemini-2.0-flash-lite',
       'gemini-2.0-flash-exp',
     ].some(model => this.model === model)
-    const systemInstruction = isImageSupported
+    let systemInstruction = isImageSupported
       ? undefined // gemini-2.0-flash-preview-image-generation などでシステムインストラクションを入れるとDeveloper instruction is not enabled エラー
       : this.createContents([options.messages.shift() as OpenAI.Chat.Completions.ChatCompletionMessageParam])[0]
+    // 出力のタイプ
+    let responseModalities = isImageSupported ? [Modality.IMAGE, Modality.TEXT] : [Modality.TEXT] // だめ[Modality.MODALITY_UNSPECIFIED],
+    if (['gemini-2.5-pro-preview-tts', 'gemini-2.5-flash-preview-tts'].some(model => this.model === model)) {
+      // TTSは対話も使えない
+      systemInstruction = undefined
+      //TODO: options.messaages[]も1つだけにしないとだめかも?
+      // 出力も音声のみ
+      responseModalities = [Modality.AUDIO]
+      // TODO; speechConfigを設定する
+      // speechConfig: {
+      //     voiceConfig: {
+      //       prebuiltVoiceConfig: { voiceName: 'Kore' },
+      //     },
+      // },
+    }
     const currentMessages: Content[] = this.createContents(options.messages)
     const tool: Tool | undefined = this.createGeminiTool(options.tools, options.functions)
     let tools: Tool[] | undefined = undefined
@@ -100,7 +119,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
         //topP, TopK
         tools, // v1betaより
         //toolConfig?: ToolConfig;
-        responseModalities: isImageSupported ? [Modality.IMAGE, Modality.TEXT] : [Modality.TEXT], // だめ[Modality.MODALITY_UNSPECIFIED],
+        responseModalities,
         //なくてもIMAGEできる responseMimeType: 'text/plain',
       },
     }
@@ -110,7 +129,7 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
     let usage: OpenAI.Completions.CompletionUsage
 
     //レスポンスメッセージの詰替え
-    const { choices, tokenCount, images } = this.createChoices(generateContentResponse.candidates)
+    const { choices, tokenCount, images } = await this.createChoices(generateContentResponse.candidates)
     if (generateContentResponse.usageMetadata) {
       usage = {
         completion_tokens: generateContentResponse.usageMetadata.candidatesTokenCount || 0,
@@ -178,7 +197,9 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
     })
   }
 
-  private createChoices(candidates: Candidate[] | undefined) {
+  private async createChoices(
+    candidates: Candidate[] | undefined,
+  ): Promise<{ choices: OpenAI.Chat.Completions.ChatCompletion.Choice[]; tokenCount: number; images: Blob[] }> {
     //レスポンスメッセージの詰替え
     // OpenAI のレスポンスメッセージは "choices": [{
     //   "index": 0,
@@ -189,17 +210,24 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
     let tokenCount = 0
     const choices: OpenAI.Chat.Completions.ChatCompletion.Choice[] = []
     const images: Blob[] = []
-    candidates?.forEach(candidate => {
+    if (!candidates) {
+      return { choices, tokenCount, images } //返事はなかったので空を返す
+    }
+    for (const candidate of candidates) {
       tokenCount += candidate.tokenCount ?? 0
       let content: string | null = null
       let toolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] | undefined = undefined
 
-      if (candidate.finishReason !== FinishReason.STOP && candidate.finishReason !== FinishReason.MAX_TOKENS) {
+      if (
+        candidate.finishReason !== FinishReason.STOP &&
+        candidate.finishReason !== FinishReason.MAX_TOKENS &&
+        candidate.finishReason !== FinishReason.OTHER // TTS
+      ) {
         log.error(`Abnormal finishReason ${candidate.finishReason}`)
-        return
+        continue
       }
 
-      candidate.content?.parts?.forEach(part => {
+      for (const part of candidate.content?.parts ?? []) {
         let found: boolean = false
         if (part.functionCall) {
           found = true
@@ -227,16 +255,25 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
           // part.inlineData.mimeType
           const imageData = part.inlineData //.data // image/png - image/jpeg
           if (imageData) {
-            // const blob = new Blob([buffer], { type: "image/png" });
-            // const buffer = Buffer.from(imageData || '', 'base64')
-            images.push(new Blob([Buffer.from(imageData.data || '', 'base64')], { type: imageData.mimeType }))
+            if (imageData.mimeType?.startsWith('image/')) {
+              // const blob = new Blob([buffer], { type: "image/png" });
+              // const buffer = Buffer.from(imageData || '', 'base64')
+              images.push(new Blob([Buffer.from(imageData.data || '', 'base64')], { type: imageData.mimeType }))
+            } else if (imageData.mimeType?.startsWith('audio/')) {
+              // AUDIO "audio/L16;codec=pcm;rate=24000"をMP3に変換する
+              const blob = new Blob([Buffer.from(imageData.data || '', 'base64')], { type: imageData.mimeType })
+              images.push(await this.encodeToMP3(blob))
+
+              // L16 PCMのリニア16ビットサンプルをWAVに変換する
+              //images.push( await this.encodeWAV(blob))
+            }
           }
         }
         if (!found) {
           // functionResponse fileData executableCode codeExecutionResult
           log.error(`Unexpected part`, part)
         }
-      })
+      }
       choices.push({
         index: candidate.index || 0,
         finish_reason: 'stop', //| 'length' | 'tool_calls' | 'content_filter' | 'function_call';
@@ -248,8 +285,48 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
           refusal: null, // アシスタントからの拒否メッセージ
         },
       })
-    })
+    }
     return { choices, tokenCount, images }
+  }
+
+  /**
+   * L16 RAW形式（audio/L16;codec=pcm;rate=24000）の音声データをMP3形式に変換する非同期関数
+   * @param l16raw L16 RAW形式の音声データ（Blob）BASE64解除済みのバイナリ
+   * @returns 変換後のMP3データ（Blob）バイナリ をPromiseで返す
+   */
+  private async encodeToMP3(l16raw: Blob): Promise<Blob> {
+    // L16 RAW("audio/L16;codec=pcm;rate=24000")をMP3に変換する
+    const rate = this.getRate(l16raw.type) // mime-typeからサンプリングレートを取得
+    const mp3encoder = new lame.Mp3Encoder(1, rate, 128) // mono rate(Hz) 128kbpsでエンコード
+    // BASE64エンコードされたl16rawをデコードしてarrayBufferに変換
+    // const base64Data = await l16raw.text()
+    // const buffer = Buffer.from(base64Data, 'base64')
+    // BASE64なし
+    const buffer = Buffer.from(await l16raw.arrayBuffer())
+    // 16LE BlobデータをArrayBufferに変換し、Int16Arrayとして扱う
+    const int16Array = new Int16Array(buffer.buffer) // 16ビット整数として読み込む
+    let mp3Tmp: Uint8Array = mp3encoder.encodeBuffer(int16Array)
+    // mp3dataの型をUint8Array[]に明示
+    const mp3data: Uint8Array[] = []
+    if (mp3Tmp.length > 0) {
+      // mp3dataにmp3Tmpを追加
+      mp3data.push(mp3Tmp)
+    }
+    mp3Tmp = mp3encoder.flush()
+    if (mp3Tmp.length > 0) {
+      mp3data.push(mp3Tmp)
+    }
+    return new Blob(mp3data, { type: 'audio/mp3' })
+  }
+  // mime-typeからサンプリングレートを取得
+  private getRate(mimeType: string) {
+    let rateStr = mimeType.match(/rate=(\d+)/)?.[1]
+    if (!rateStr) {
+      log.warn('Unknown sampling rate for L16 RAW, using default 24000 Hz')
+      rateStr = '24000' // デフォルトのサンプリングレートを設定
+    }
+    const rate = parseInt(rateStr, 10) // サンプリングレートを数値に変換
+    return rate
   }
 
   private createGeminiTool(
@@ -457,6 +534,11 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
   }
 
   private createPart(dataURL: string, parts: Part[]) {
+    const notSupportedAudioAndVideo = [
+      // TSSはマルチターンchat未対応なので、そもそも無茶
+      `gemini-2.5-flash-preview-tts`,
+      `gemini-2.5-pro-preview-tts`,
+    ].some(model => this.model === model)
     if (dataURL.startsWith('http')) {
       // URL形式: 'https://example.com/image.png'だった
       // 拡張子とMIMEタイプの対応表
@@ -489,6 +571,14 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
         '.xml': 'text/xml',
         '.rtf': 'text/rtf',
         '.json': 'application/json',
+        // 音声も追加
+        '.mp3': 'audio/mpeg',
+        '.wav': 'audio/wav',
+        '.ogg': 'audio/ogg',
+        '.aac': 'audio/aac',
+        '.m4a': 'audio/mp4',
+        '.flac': 'audio/flac',
+        '.opus': 'audio/opus',
       }
       let mimeType: string | undefined = undefined // YouTube動画はMimeTypeいらない
 
@@ -496,6 +586,10 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       const matched = Object.keys(extensionMimeMap).find(ext => dataURL.toLowerCase().endsWith(ext))
       if (matched) {
         mimeType = extensionMimeMap[matched]
+        if ((mimeType?.startsWith('audio/') || mimeType?.startsWith('video/')) && notSupportedAudioAndVideo) {
+          log.trace(`Audio and video not supported in this model ${this.model}`, dataURL)
+          return // 音声と動画の入力はサポートされていないモデルなので、無視する
+        }
       }
       parts.push({ fileData: { fileUri: dataURL, mimeType } })
     } else {
@@ -515,6 +609,10 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       // XML - text/xml
       // RTF - text/rtf
       const mimeType = dataURL.substring('data:'.length, mimeEnd)
+      if ((mimeType?.startsWith('audio/') || mimeType?.startsWith('video/')) && notSupportedAudioAndVideo) {
+        log.trace(`Audio and video not supported in this model ${this.model}`, dataURL)
+        return // 音声と動画の入力はサポートされていないモデルなので、無視する
+      }
       const data = dataURL.substring(mimeEnd + ';base64,'.length)
       parts.push({ inlineData: { mimeType, data } })
       //下のcreateParts():でも出る log.trace(`Converted image_url ${mimeType}, ${shortenString(data)}`)

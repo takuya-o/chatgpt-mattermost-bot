@@ -328,7 +328,7 @@ export class OpenAIWrapper {
           const form = new FormData()
           form.append('channel_id', msgData.post.channel_id)
           // 日付入りファイル名を生成する
-          const filename = OpenAIWrapper.createImageFileName()
+          const filename = OpenAIWrapper.createImageFileName(image.type)
           form.append('files', image, filename)
           // // imageはBASE64文字列なのでデコードしてバイナリデータに変換する
           // const binary = Buffer.from(image, 'base64')
@@ -437,7 +437,7 @@ export class OpenAIWrapper {
    * 現在の日付と時刻をもとに画像ファイル名（imageYYYYMMDDhhmmssSSS.png）を生成します。
    * @returns 生成された画像ファイル名（例: image20240607_153012123.png）
    */
-  public static createImageFileName() {
+  public static createImageFileName(mimeType: string) {
     const now = new Date()
     const yyyy = now.getFullYear().toString()
     const mm = (now.getMonth() + 1).toString().padStart(2, '0')
@@ -447,7 +447,17 @@ export class OpenAIWrapper {
     const min = now.getMinutes().toString().padStart(2, '0')
     const ss = now.getSeconds().toString().padStart(2, '0')
     const ms = now.getMilliseconds().toString().padStart(3, '0')
-    const filename = `image${yyyy}${mm}${dd}${hh}${min}${ss}${ms}.png`
+    let filename = `image${yyyy}${mm}${dd}${hh}${min}${ss}${ms}.png`
+    // mimeTypeにimageを含んでいたらfilenameを画像ファイル名、audioを含んでいたら音声ファイル名を生成する
+    if (mimeType.startsWith('image/')) {
+      filename = `image${yyyy}${mm}${dd}${hh}${min}${ss}${ms}.png`
+    } else if (mimeType.startsWith('audio/mp3')) {
+      filename = `audio${yyyy}${mm}${dd}${hh}${min}${ss}${ms}.mp3`
+    } else if (mimeType.startsWith('audio/')) {
+      // Gemini TTS audio/L16;codec=pcm;rate=24000
+      filename = `audio${yyyy}${mm}${dd}${hh}${min}${ss}${ms}.wav`
+    }
+
     return filename
   }
 

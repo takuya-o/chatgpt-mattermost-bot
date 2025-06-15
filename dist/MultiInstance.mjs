@@ -457,6 +457,7 @@ var CohereAdapter = class extends AIAdapter {
 };
 
 // src/adapters/GoogleGeminiAdapter.ts
+import * as lame from "@breezystack/lamejs";
 import {
   FinishReason,
   GoogleGenAI,
@@ -484,7 +485,6 @@ var GoogleGeminiAdapter = class extends AIAdapter {
     this.generativeModels = ai.models;
     this.baseURL = `https://generativelanguage.googleapis.com/v1beta/models/${model}:`;
   }
-  // eslint-disable-next-line max-lines-per-function
   async createMessage(options) {
     const isImageSupported = [
       // 画像対応のモデル
@@ -493,9 +493,12 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       "gemini-2.0-flash-preview-image-generation",
       //
       "gemini-2.0-flash-exp"
+      // The support is not official
     ].some((model) => this.model === model);
     const isNotSupportedFunction = [
       // 関数未対応のモデル
+      "gemini-2.5-pro-preview-tts",
+      "gemini-2.5-flash-preview-tts",
       "models/gemini-2.0-flash-preview-image-generation",
       "gemini-2.0-flash-exp-image-generation",
       "gemini-2.0-flash-preview-image-generation",
@@ -504,7 +507,12 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       "gemini-2.0-flash-lite",
       "gemini-2.0-flash-exp"
     ].some((model) => this.model === model);
-    const systemInstruction = isImageSupported ? void 0 : this.createContents([options.messages.shift()])[0];
+    let systemInstruction = isImageSupported ? void 0 : this.createContents([options.messages.shift()])[0];
+    let responseModalities = isImageSupported ? [Modality.IMAGE, Modality.TEXT] : [Modality.TEXT];
+    if (["gemini-2.5-pro-preview-tts", "gemini-2.5-flash-preview-tts"].some((model) => this.model === model)) {
+      systemInstruction = void 0;
+      responseModalities = [Modality.AUDIO];
+    }
     const currentMessages = this.createContents(options.messages);
     const tool = this.createGeminiTool(options.tools, options.functions);
     let tools = void 0;
@@ -529,8 +537,7 @@ var GoogleGeminiAdapter = class extends AIAdapter {
         tools,
         // v1betaより
         //toolConfig?: ToolConfig;
-        responseModalities: isImageSupported ? [Modality.IMAGE, Modality.TEXT] : [Modality.TEXT]
-        // だめ[Modality.MODALITY_UNSPECIFIED],
+        responseModalities
         //なくてもIMAGEできる responseMimeType: 'text/plain',
       }
     };
@@ -538,7 +545,7 @@ var GoogleGeminiAdapter = class extends AIAdapter {
     const generateContentResponse = await this.generativeModels.generateContent(request);
     log3.trace("generateContentResponse", this.shortenResponse(generateContentResponse));
     let usage;
-    const { choices, tokenCount: tokenCount2, images } = this.createChoices(generateContentResponse.candidates);
+    const { choices, tokenCount: tokenCount2, images } = await this.createChoices(generateContentResponse.candidates);
     if (generateContentResponse.usageMetadata) {
       usage = {
         completion_tokens: generateContentResponse.usageMetadata.candidatesTokenCount || 0,
@@ -598,19 +605,22 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       }
     });
   }
-  createChoices(candidates) {
+  async createChoices(candidates) {
     let tokenCount2 = 0;
     const choices = [];
     const images = [];
-    candidates?.forEach((candidate) => {
+    if (!candidates) {
+      return { choices, tokenCount: tokenCount2, images };
+    }
+    for (const candidate of candidates) {
       tokenCount2 += candidate.tokenCount ?? 0;
       let content = null;
       let toolCalls = void 0;
-      if (candidate.finishReason !== FinishReason.STOP && candidate.finishReason !== FinishReason.MAX_TOKENS) {
+      if (candidate.finishReason !== FinishReason.STOP && candidate.finishReason !== FinishReason.MAX_TOKENS && candidate.finishReason !== FinishReason.OTHER) {
         log3.error(`Abnormal finishReason ${candidate.finishReason}`);
-        return;
+        continue;
       }
-      candidate.content?.parts?.forEach((part) => {
+      for (const part of candidate.content?.parts ?? []) {
         let found = false;
         if (part.functionCall) {
           found = true;
@@ -638,13 +648,18 @@ var GoogleGeminiAdapter = class extends AIAdapter {
           found = true;
           const imageData = part.inlineData;
           if (imageData) {
-            images.push(new Blob([Buffer.from(imageData.data || "", "base64")], { type: imageData.mimeType }));
+            if (imageData.mimeType?.startsWith("image/")) {
+              images.push(new Blob([Buffer.from(imageData.data || "", "base64")], { type: imageData.mimeType }));
+            } else if (imageData.mimeType?.startsWith("audio/")) {
+              const blob = new Blob([Buffer.from(imageData.data || "", "base64")], { type: imageData.mimeType });
+              images.push(await this.encodeToMP3(blob));
+            }
           }
         }
         if (!found) {
           log3.error(`Unexpected part`, part);
         }
-      });
+      }
       choices.push({
         index: candidate.index || 0,
         finish_reason: "stop",
@@ -660,8 +675,39 @@ var GoogleGeminiAdapter = class extends AIAdapter {
           // アシスタントからの拒否メッセージ
         }
       });
-    });
+    }
     return { choices, tokenCount: tokenCount2, images };
+  }
+  /**
+   * L16 RAW形式（audio/L16;codec=pcm;rate=24000）の音声データをMP3形式に変換する非同期関数
+   * @param l16raw L16 RAW形式の音声データ（Blob）BASE64解除済みのバイナリ
+   * @returns 変換後のMP3データ（Blob）バイナリ をPromiseで返す
+   */
+  async encodeToMP3(l16raw) {
+    const rate = this.getRate(l16raw.type);
+    const mp3encoder = new lame.Mp3Encoder(1, rate, 128);
+    const buffer = Buffer.from(await l16raw.arrayBuffer());
+    const int16Array = new Int16Array(buffer.buffer);
+    let mp3Tmp = mp3encoder.encodeBuffer(int16Array);
+    const mp3data = [];
+    if (mp3Tmp.length > 0) {
+      mp3data.push(mp3Tmp);
+    }
+    mp3Tmp = mp3encoder.flush();
+    if (mp3Tmp.length > 0) {
+      mp3data.push(mp3Tmp);
+    }
+    return new Blob(mp3data, { type: "audio/mp3" });
+  }
+  // mime-typeからサンプリングレートを取得
+  getRate(mimeType) {
+    let rateStr = mimeType.match(/rate=(\d+)/)?.[1];
+    if (!rateStr) {
+      log3.warn("Unknown sampling rate for L16 RAW, using default 24000 Hz");
+      rateStr = "24000";
+    }
+    const rate = parseInt(rateStr, 10);
+    return rate;
   }
   createGeminiTool(tools, functions) {
     tools = this.convertFunctionsToTools(functions, tools);
@@ -822,6 +868,11 @@ var GoogleGeminiAdapter = class extends AIAdapter {
     return parts;
   }
   createPart(dataURL, parts) {
+    const notSupportedAudioAndVideo = [
+      // TSSはマルチターンchat未対応なので、そもそも無茶
+      `gemini-2.5-flash-preview-tts`,
+      `gemini-2.5-pro-preview-tts`
+    ].some((model) => this.model === model);
     if (dataURL.startsWith("http")) {
       const extensionMimeMap = {
         ".jpg": "image/jpeg",
@@ -851,17 +902,33 @@ var GoogleGeminiAdapter = class extends AIAdapter {
         ".csv": "text/csv",
         ".xml": "text/xml",
         ".rtf": "text/rtf",
-        ".json": "application/json"
+        ".json": "application/json",
+        // 音声も追加
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".ogg": "audio/ogg",
+        ".aac": "audio/aac",
+        ".m4a": "audio/mp4",
+        ".flac": "audio/flac",
+        ".opus": "audio/opus"
       };
       let mimeType = void 0;
       const matched = Object.keys(extensionMimeMap).find((ext) => dataURL.toLowerCase().endsWith(ext));
       if (matched) {
         mimeType = extensionMimeMap[matched];
+        if ((mimeType?.startsWith("audio/") || mimeType?.startsWith("video/")) && notSupportedAudioAndVideo) {
+          log3.trace(`Audio and video not supported in this model ${this.model}`, dataURL);
+          return;
+        }
       }
       parts.push({ fileData: { fileUri: dataURL, mimeType } });
     } else {
       const mimeEnd = dataURL.indexOf(";");
       const mimeType = dataURL.substring("data:".length, mimeEnd);
+      if ((mimeType?.startsWith("audio/") || mimeType?.startsWith("video/")) && notSupportedAudioAndVideo) {
+        log3.trace(`Audio and video not supported in this model ${this.model}`, dataURL);
+        return;
+      }
       const data = dataURL.substring(mimeEnd + ";base64,".length);
       parts.push({ inlineData: { mimeType, data } });
     }
@@ -1252,7 +1319,7 @@ var OpenAIWrapper = class _OpenAIWrapper {
         for (const image of images) {
           const form = new FormData();
           form.append("channel_id", msgData.post.channel_id);
-          const filename = _OpenAIWrapper.createImageFileName();
+          const filename = _OpenAIWrapper.createImageFileName(image.type);
           form.append("files", image, filename);
           const response = await this.getMattermostClient().getClient().uploadFile(form);
           openAILog.trace("Uploaded a file with id", response.file_infos[0].id);
@@ -1352,7 +1419,7 @@ var OpenAIWrapper = class _OpenAIWrapper {
    * 現在の日付と時刻をもとに画像ファイル名（imageYYYYMMDDhhmmssSSS.png）を生成します。
    * @returns 生成された画像ファイル名（例: image20240607_153012123.png）
    */
-  static createImageFileName() {
+  static createImageFileName(mimeType) {
     const now = /* @__PURE__ */ new Date();
     const yyyy = now.getFullYear().toString();
     const mm = (now.getMonth() + 1).toString().padStart(2, "0");
@@ -1361,7 +1428,14 @@ var OpenAIWrapper = class _OpenAIWrapper {
     const min = now.getMinutes().toString().padStart(2, "0");
     const ss = now.getSeconds().toString().padStart(2, "0");
     const ms = now.getMilliseconds().toString().padStart(3, "0");
-    const filename = `image${yyyy}${mm}${dd}${hh}${min}${ss}${ms}.png`;
+    let filename = `image${yyyy}${mm}${dd}${hh}${min}${ss}${ms}.png`;
+    if (mimeType.startsWith("image/")) {
+      filename = `image${yyyy}${mm}${dd}${hh}${min}${ss}${ms}.png`;
+    } else if (mimeType.startsWith("audio/mp3")) {
+      filename = `audio${yyyy}${mm}${dd}${hh}${min}${ss}${ms}.mp3`;
+    } else if (mimeType.startsWith("audio/")) {
+      filename = `audio${yyyy}${mm}${dd}${hh}${min}${ss}${ms}.wav`;
+    }
     return filename;
   }
   makeModelAndUsage(aiResponse, model, usage) {
@@ -1607,7 +1681,7 @@ The input was:${args.imageDescription}`;
   async base64ToFile(b64String, channelId, mattermostClient) {
     const form = new FormData();
     form.append("channel_id", channelId);
-    const fileName = OpenAIWrapper.createImageFileName();
+    const fileName = OpenAIWrapper.createImageFileName("image/png");
     form.append("files", new Blob([Buffer.from(b64String, "base64")], { type: "image/png" }), fileName);
     const response = await mattermostClient.uploadFile(form);
     this.log.trace("Uploaded a file with id", response.file_infos[0].id);
@@ -2019,7 +2093,8 @@ var BotService2 = class {
               const url = await this.getBase64Image(
                 originalUrl,
                 this.mattermostClient.getClient().getToken(),
-                file.mime_type,
+                file.mime_type || file.extension,
+                // mime_typeがない場合は拡張子を使う
                 file.width,
                 file.height
               );
@@ -2135,6 +2210,8 @@ var BotService2 = class {
       format = this.toMimeType(format, "text");
     } else if (["mov", "mpeg", "mp4", "mpg", "avi", "wmv", "mpegps", "flv"].includes(format.replace(/^.+\//, ""))) {
       format = this.toMimeType(format, "video");
+    } else if (["mp3", "wav", "ogg"].includes(format.replace(/^.+\//, ""))) {
+      format = this.toMimeType(format, "audio");
     } else {
       if (!format || ["png", "jpeg", "webp", "gif"].includes(format.replace(/^.+\//, "")) && (width <= 0 || height <= 0)) {
         const metadata = await sharp(buffer).metadata();

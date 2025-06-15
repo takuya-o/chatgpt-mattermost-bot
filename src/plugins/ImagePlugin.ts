@@ -86,7 +86,7 @@ export class ImagePlugin extends PluginBase<ImagePluginArgs> {
     // for (let i = 0; i < bin.length; i++) {
     //   buffer[i] = bin.charCodeAt(i)
     // }
-    const fileName = OpenAIWrapper.createImageFileName()
+    const fileName = OpenAIWrapper.createImageFileName('image/png')
     form.append('files', new Blob([Buffer.from(b64String, 'base64')], { type: 'image/png' }), fileName)
     // form.append('files', Buffer.from(b64String, 'base64'), 'image.png')
     const response = await mattermostClient.uploadFile(form)
