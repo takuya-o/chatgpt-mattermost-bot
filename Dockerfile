@@ -1,5 +1,5 @@
 # NPM builder image
-FROM node:22-bookworm-slim AS npm_builder
+FROM node:24-bookworm-slim AS npm_builder
 #22.12.0-bookworm-slim (Debian 12)
 #22-bookworm-slim, 22-slim, 22.12-bookworm-slim, 22.12-slim, 22.12.0-bookworm-slim, 22.12.0-slim, jod-bookworm-slim, jod-slim, lts-bookworm-slim, lts-slim
 # bookworm = Debian12
@@ -22,7 +22,7 @@ RUN rm -rf node_modules/ && npm ci --omit dev
 # NPM runtime image
 # See: https://github.com/GoogleContainerTools/distroless/tree/main/examples/nodejs
 # For DEBUG: docker run -it --entrypoint=sh gcr.io/distroless/nodejs22-debian12:debug-nonroot
-FROM gcr.io/distroless/nodejs22-debian12:nonroot AS npm_runtime
+FROM gcr.io/distroless/nodejs24-debian12:nonroot AS npm_runtime
 
 WORKDIR /app
 

@@ -6,7 +6,7 @@
 ## Enhanced from the [original yGuy/chatgpt-mattermost-bot](https://github.com/yGuy/chatgpt-mattermost-bot)
 
 * Generate image and audio by Gemini
-  * Generate image support  with `gemini-2.0-flash-exp` and `gemini-2.0-flash-preview-image-generation`.
+  * Generate image support  with `gemini-2.0-flash-exp` and `gemini-2.0-flash-preview-image-generation`. Because it doesn't need an image plugin, it integrates more seamlessly into the conversation.
   ![Screenshot of painting output](./painting-moning-beach.png)
   * Support for audio generation with `gemini-2.5-flash-preview-tts` and `gemini-2.5-pro-preview-tts`, with MP3 output playable in mattermost.
   ![Screenshot of mp3 output.](./gemini-tts.png)
