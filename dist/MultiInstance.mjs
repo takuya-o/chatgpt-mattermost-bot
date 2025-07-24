@@ -507,6 +507,22 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       "gemini-2.0-flash-lite",
       "gemini-2.0-flash-exp"
     ].some((model) => this.model === model);
+    const isSupportedGroundingTool = [
+      // Google検索ツールが使えるけど、Functionと同時に使えないモデル
+      "gemini-2.5-pro",
+      "gemini-2.5-pro-preview",
+      "gemini-2.5-pro-preview-06-05",
+      "gemini-2.5-pro-preview-05-06",
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-preview-05-20",
+      "gemini-2.5-flash-lite-preview-06-17"
+    ].some((model) => this.model === model);
+    const isSupportedThinkingBudget = [
+      // Thinking Budgetが使えるモデル
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-lite"
+    ].some((model) => this.model.startsWith(model));
     let systemInstruction = isImageSupported ? void 0 : this.createContents([options.messages.shift()])[0];
     let responseModalities = isImageSupported ? [Modality.IMAGE, Modality.TEXT] : [Modality.TEXT];
     if (["gemini-2.5-pro-preview-tts", "gemini-2.5-flash-preview-tts"].some((model) => this.model === model)) {
@@ -514,13 +530,18 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       responseModalities = [Modality.AUDIO];
     }
     const currentMessages = this.createContents(options.messages);
-    const tool = this.createGeminiTool(options.tools, options.functions);
     let tools = void 0;
-    if (tool) {
-      tools = [tool];
-    }
     if (isNotSupportedFunction) {
       tools = void 0;
+    } else {
+      let tool = this.createGeminiTool(options.tools, options.functions);
+      if (isSupportedGroundingTool) {
+        tool = { googleSearch: {} };
+        tools = [tool];
+      }
+      if (tool) {
+        tools = [tool];
+      }
     }
     const request = {
       model: this.model,
@@ -541,6 +562,14 @@ var GoogleGeminiAdapter = class extends AIAdapter {
         //なくてもIMAGEできる responseMimeType: 'text/plain',
       }
     };
+    if (isSupportedThinkingBudget) {
+      request.config.thinkingConfig = {
+        includeThoughts: true,
+        // 思考を含める
+        thinkingBudget: -1
+        // 動的思考
+      };
+    }
     log3.trace("request", JSON.parse(this.shortenLongString(JSON.stringify(request))));
     const generateContentResponse = await this.generativeModels.generateContent(request);
     log3.trace("generateContentResponse", this.shortenResponse(generateContentResponse));
@@ -982,7 +1011,11 @@ var OpenAIAdapter = class {
     }
   }
   async imagesGenerate(imageGeneratePrams) {
-    return this.openai.images.generate(imageGeneratePrams);
+    const result = await this.openai.images.generate(imageGeneratePrams);
+    if ("on" in result) {
+      throw new Error("Stream response is not supported in imagesGenerate");
+    }
+    return result;
   }
 };
 

@@ -73,6 +73,23 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       'gemini-2.0-flash-lite',
       'gemini-2.0-flash-exp',
     ].some(model => this.model === model)
+    const isSupportedGroundingTool = [
+      // Google検索ツールが使えるけど、Functionと同時に使えないモデル
+      'gemini-2.5-pro',
+      'gemini-2.5-pro-preview',
+      'gemini-2.5-pro-preview-06-05',
+      'gemini-2.5-pro-preview-05-06',
+      'gemini-2.5-flash',
+      'gemini-2.5-flash-preview-05-20',
+      'gemini-2.5-flash-lite-preview-06-17',
+    ].some(model => this.model === model)
+    // https://ai.google.dev/gemini-api/docs/thinking?hl=ja#set-budget
+    const isSupportedThinkingBudget = [
+      // Thinking Budgetが使えるモデル
+      'gemini-2.5-pro',
+      'gemini-2.5-flash',
+      'gemini-2.5-flash-lite',
+    ].some(model => this.model.startsWith(model))
     let systemInstruction = isImageSupported
       ? undefined // gemini-2.0-flash-preview-image-generation などでシステムインストラクションを入れるとDeveloper instruction is not enabled エラー
       : this.createContents([options.messages.shift() as OpenAI.Chat.Completions.ChatCompletionMessageParam])[0]
@@ -92,13 +109,20 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       // },
     }
     const currentMessages: Content[] = this.createContents(options.messages)
-    const tool: Tool | undefined = this.createGeminiTool(options.tools, options.functions)
     let tools: Tool[] | undefined = undefined
-    if (tool) {
-      tools = [tool]
-    }
     if (isNotSupportedFunction) {
       tools = undefined
+    } else {
+      let tool: Tool | undefined = this.createGeminiTool(options.tools, options.functions)
+      if (isSupportedGroundingTool) {
+        // Add the grounding tool https://ai.google.dev/gemini-api/docs/google-search
+        // Google検索での検証とFunction=プラグインは同時に使えないので、上書き
+        tool = { googleSearch: {} } // Google検索ツール 期間指定はしない
+        tools = [tool]
+      }
+      if (tool) {
+        tools = [tool]
+      }
     }
     // const chat = this.generativeModel
     //   .startChat({
@@ -122,6 +146,13 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
         responseModalities,
         //なくてもIMAGEできる responseMimeType: 'text/plain',
       },
+    }
+    if (isSupportedThinkingBudget) {
+      // 思考可能なモデルの場合動的思考を有効にする
+      request.config!.thinkingConfig = {
+        includeThoughts: true, // 思考を含める
+        thinkingBudget: -1, // 動的思考
+      }
     }
     log.trace('request', JSON.parse(this.shortenLongString(JSON.stringify(request)))) // JSON.parse()の例外のリスク
     const generateContentResponse = await this.generativeModels.generateContent(request)

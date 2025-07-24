@@ -31,7 +31,15 @@ export class OpenAIAdapter implements AIProvider {
       throw error
     }
   }
-  async imagesGenerate(imageGeneratePrams: OpenAI.Images.ImageGenerateParams) {
-    return this.openai.images.generate(imageGeneratePrams)
+  async imagesGenerate(imageGeneratePrams: OpenAI.Images.ImageGenerateParams): Promise<OpenAI.Images.ImagesResponse> {
+    // OpenAI.Images.ImagesResponse型のみ返す。ストリームの場合はエラーを投げる
+    const result = await this.openai.images.generate(imageGeneratePrams)
+    // ストリーム型の場合はエラー
+    if ('on' in result) {
+      // ストリームは未対応のためエラーを投げる
+      throw new Error('Stream response is not supported in imagesGenerate')
+    }
+    // resultがストリーム型ではないのでImagesResponse型だけであることをTypeScriptに明示する
+    return result as OpenAI.Images.ImagesResponse
   }
 }
