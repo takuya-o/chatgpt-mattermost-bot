@@ -200,12 +200,24 @@ export class BotService {
               // 24分だと437,195トークン>32,768トークン 'gemini-2.0-flash-preview-image-generation'
               // <1,048,576 'gemini-2.5-flash-preview-05-20'
             ) {
+              // YouTubeへのリンクだった
               const data = embed.data as OpenGraphMetadata | undefined
               if (data?.type === 'opengraph' && data?.images?.[0]?.secure_url) {
                 // YouTubeのサムネイルは画像から除くので除外リストに加える
                 excludeImage.push(data.images[0].secure_url)
               }
               content.push({ type: 'image_url', image_url: { url: embed.url } }) // OpenAIのimage_urlは、まだ動画のURLを受け付けないけど
+            }
+            if (
+              embed.type === 'opengraph' &&
+              embed.url &&
+              embed.data &&
+              (embed.data as OpenGraphMetadata | undefined)?.type === 'website'
+            ) {
+              // embedだけでなくimagesもついているのでこちらは無視
+              botLog.info(
+                `Ignore embed type: ${embed.type} data.type=${(embed.data as OpenGraphMetadata | undefined)?.type}, use images`,
+              )
             } else {
               botLog.warn(`Unsupported embed type: ${embed.type}. Skipping.`, embed)
             }
@@ -275,15 +287,8 @@ export class BotService {
         Authorization: `Bearer ${token}`, // Add the Authentication header here
       }
     }
-    const response = await fetch(url, init).catch(error => {
-      matterMostLog.error(`Fech Exception! url: ${url}`, error)
-      return { ok: false } as Response
-    })
-    if (!response.ok) {
-      botLog.error(`Fetch Image URL HTTP error! status: ${response?.status}`)
-      return ''
-    }
-    let buffer = Buffer.from((await response.arrayBuffer()) as ArrayBufferLike)
+
+    let dataURL: string = ''
     // OpenAIのサポートしている画像形式はPNG, JPEG, WEBP, GIF
     // see: https://platform.openai.com/docs/guides/vision/what-type-of-files-can-i-upload
     // Geminiのサポートしている画像・ビデオ形式は
@@ -302,37 +307,110 @@ export class BotService {
     } else if (['mov', 'mpeg', 'mp4', 'mpg', 'avi', 'wmv', 'mpegps', 'flv'].includes(format.replace(/^.+\//, ''))) {
       //ビデオ
       format = this.toMimeType(format, 'video')
+      dataURL = await this.makeLargeDataURL(url, init, format)
     } else if (['mp3', 'wav', 'ogg'].includes(format.replace(/^.+\//, ''))) {
       // 音声 TTSでアシスタントに音声が入ることがあるので
       format = this.toMimeType(format, 'audio')
+      dataURL = await this.makeLargeDataURL(url, init, format)
     } else {
       // 画像
-      // sharp画像変換ライブラリの対応形式は    PNG, JPEG, WebP, GIF and AVIF
-      // https://www.npmjs.com/package/sharp
-      if (
-        !format ||
-        (['png', 'jpeg', 'webp', 'gif'].includes(format.replace(/^.+\//, '')) && (width <= 0 || height <= 0))
-      ) {
-        // mattermostがサイズを持っていなかったので実物から取る
-        const metadata = await sharp(buffer).metadata() //TODO:ビデオだった場合はsharpどうなるの?
-        width = metadata.width ?? 0
-        height = metadata.height ?? 0
-        format = metadata.format ?? '' //jpeg, png, webp, gif, svg
+      let buffer: Buffer<ArrayBufferLike> = await this.fetchData(url, init)
+      // 画像は解像度サイズ最適化が入る
+      ;({ format, width, height, buffer } = await this.convertImage(format, width, height, buffer))
+      if (buffer.length > 0) {
+        // Convert the buffer to a data URL
+        dataURL = this.makeDataURL(format, buffer)
       }
-      if (!['png', 'jpeg', 'webp', 'gif'].includes(format.replace(/^.+\//, ''))) {
-        matterMostLog.warn(`Unsupported image format: ${format}. Converting to JPEG.`)
-        buffer = await sharp(buffer).jpeg().toBuffer()
-        ;({ format = '', width = 0, height = 0 } = await sharp(buffer).metadata())
-      }
-      // 画像の短辺は768px、長辺は2,000px以下に縮小する
-      buffer = await this.resizeImage(width, height, buffer)
-      format = this.toMimeType(format, 'image')
     }
-    // Convert the buffer to a data URL
-    const mimeType = format
-    const base64 = buffer.toString('base64')
-    const dataURL = 'data:' + mimeType + ';base64,' + base64
     return dataURL
+  }
+
+  // 大きなファイルの時も対応したdataURLを作る
+  private async makeLargeDataURL(url: string, init: RequestInit, mimeType: string): Promise<string> {
+    const downloadSize = await this.getDownloadSize(url, init).catch(error => {
+      botLog.error(`Fetch HEAD エラー: ${error}`)
+      return 0 // サイズ不明なので0にする // TODO: 本当はファイルサイスが巨大だった場合
+    })
+    // Geminiはファイルサイズ2GBまで20MB以上はFiles APIでuploadが必要
+    // OpenAIは、PDFファイル10MB未満 PDF100ページ以下 複数ファイルで合計32MBまで
+    // https://platform.openai.com/docs/guides/pdf-files
+    if (downloadSize > 2 * 1024 * 1024 * 1024) {
+      //2GB以上は論外
+      matterMostLog.warn(`File size too large to embed in data URL: ${downloadSize} bytes. url: ${url}`)
+      return ''
+    }
+    if (downloadSize > 20 * 1024 * 1024) {
+      //20MB以上はFiles APIでuploadが必要
+      //TODO: 各AIAdaperでFile Upload して良さげなdataURLを返す
+      matterMostLog.info(`File size too large to embed in data URL: ${downloadSize} bytes. url: ${url}`)
+      return ''
+    }
+    const buffer = await this.fetchData(url, init)
+    return this.makeDataURL(mimeType, buffer)
+  }
+  // Convert buffer to a BASE64 data URL
+  private makeDataURL(mimeType: string, buffer: Buffer<ArrayBufferLike>): string {
+    const base64 = buffer.toString('base64')
+    return 'data:' + mimeType + ';base64,' + base64
+  }
+  // URLからデータをfetchする
+  private async fetchData(url: string, init: RequestInit): Promise<Buffer<ArrayBufferLike>> {
+    const response = await fetch(url, init).catch(error => {
+      matterMostLog.error(`Fech Exception! url: ${url}`, error)
+      return { ok: false } as Response
+    })
+    if (!response.ok) {
+      botLog.error(`Fetch Image URL HTTP error! status: ${response?.status}`)
+      return Buffer.alloc(0)
+    }
+    const buffer = Buffer.from((await response.arrayBuffer()) as ArrayBufferLike)
+    return buffer
+  }
+  // 画像をOpenAIがサポートしている形式とサイズに変換する
+  private async convertImage(format: string, width: number, height: number, buffer: Buffer<ArrayBufferLike>) {
+    // sharp画像変換ライブラリの対応形式は    PNG, JPEG, WebP, GIF and AVIF
+    // https://www.npmjs.com/package/sharp
+    if (
+      !format ||
+      (['png', 'jpeg', 'webp', 'gif'].includes(format.replace(/^.+\//, '')) && (width <= 0 || height <= 0))
+    ) {
+      // mattermostがサイズを持っていなかったので実物から取る
+      const metadata = await sharp(buffer).metadata() //TODO:ビデオだった場合はsharpどうなるの?
+      width = metadata.width ?? 0
+      height = metadata.height ?? 0
+      format = metadata.format ?? '' //jpeg, png, webp, gif, svg
+    }
+    if (!['png', 'jpeg', 'webp', 'gif'].includes(format.replace(/^.+\//, ''))) {
+      matterMostLog.warn(`Unsupported image format: ${format}. Converting to JPEG.`)
+      buffer = await sharp(buffer).jpeg().toBuffer()
+      ;({ format = '', width = 0, height = 0 } = await sharp(buffer).metadata())
+    }
+    // 画像の短辺は768px、長辺は2,000px以下に縮小する
+    buffer = await this.resizeImage(width, height, buffer)
+    format = this.toMimeType(format, 'image')
+    return { format, width, height, buffer }
+  }
+
+  // URLのファイルサイズを調べる
+  private async getDownloadSize(url: string, init: RequestInit): Promise<number> {
+    try {
+      const response = await fetch(url, { method: 'HEAD', ...init })
+      if (!response.ok) {
+        botLog.error(`Fetch HEAD URL HTTP error! status: ${response?.status}`)
+        throw new Error(`Fetch HEAD URL HTTP error! status: ${response.status}`)
+      }
+      const contentLength = response.headers.get('Content-Length')
+      if (contentLength) {
+        botLog.log(`ダウンロードサイズ: ${contentLength} バイト ${url}`)
+        return parseInt(contentLength, 10)
+      } else {
+        botLog.log(`Fetch HEAD Content-Length ヘッダーが見つかりませんでした。 ${url}`)
+        throw new Error(`Fetch HEAD URL Can't find Content-Length Header ${url}`)
+      }
+    } catch (error) {
+      botLog.error('Fetch HEAD エラー:', error)
+      throw error
+    }
   }
 
   /**
@@ -365,6 +443,9 @@ export class BotService {
     }
     if (Math.min(width, height) > shortEdge) {
       const resizeRatio = shortEdge / Math.min(width, height)
+      botLog.info(
+        `Resize image ${resizeRatio * 100}% ${width}x${height} to ${Math.round(width * resizeRatio)}x${Math.round(height * resizeRatio)}`,
+      )
       width *= resizeRatio
       height *= resizeRatio
       resize = true

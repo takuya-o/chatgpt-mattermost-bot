@@ -45,6 +45,7 @@ export type ProviderConfig = {
   temperature?: number
   maxPromptTokens?: number
   reasoningEffort: OpenAI.Chat.Completions.ChatCompletionReasoningEffort
+  verbosity: OpenAI.Chat.Completions.ChatCompletionVerbosity
   plugins?: string
 }
 

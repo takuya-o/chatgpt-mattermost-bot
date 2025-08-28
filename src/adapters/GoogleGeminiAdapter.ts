@@ -53,16 +53,19 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
     options: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
   ): Promise<{ response: OpenAI.Chat.Completions.ChatCompletion; images: Blob[] }> {
     //These arrays are to maintain the history of the conversation
-    const isImageSupported = [
-      // 画像対応のモデル
-      'models/gemini-2.0-flash-preview-image-generation',
-      'gemini-2.0-flash-exp-image-generation',
-      'gemini-2.0-flash-preview-image-generation',
-      //
-      'gemini-2.0-flash-exp', // The support is not official
-    ].some(model => this.model === model)
+    const isImageSupported =
+      [
+        // 画像対応のモデル
+        'gemini-2.5-flash-image-preview',
+        'models/gemini-2.0-flash-preview-image-generation',
+        'gemini-2.0-flash-exp-image-generation',
+        'gemini-2.0-flash-preview-image-generation',
+        //
+        'gemini-2.0-flash-exp', // The support is not official
+      ].some(model => this.model === model) || this.model.includes('-image')
     const isNotSupportedFunction = [
       // 関数未対応のモデル
+      'gemini-2.5-flash-image-preview',
       'gemini-2.5-pro-preview-tts',
       'gemini-2.5-flash-preview-tts',
       'models/gemini-2.0-flash-preview-image-generation',
@@ -451,9 +454,12 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       boolean: Type.BOOLEAN,
       array: Type.ARRAY,
     }
-    const paramType = tool.function.parameters?.type as unknown as string | undefined
-    if (paramType && typeMapping[paramType]) {
-      parameters!.type = typeMapping[paramType]
+    // toolがfunction型の場合のみtypeプロパティにアクセスする
+    if (tool.type === 'function' && 'function' in tool && tool.function?.parameters) {
+      const paramType = (tool.function.parameters as { type?: string }).type
+      if (paramType && typeMapping[paramType]) {
+        parameters!.type = typeMapping[paramType]
+      }
     }
   }
 

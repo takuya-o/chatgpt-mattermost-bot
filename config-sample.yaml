@@ -33,7 +33,8 @@ bots:
     visionKey: 'your-azure-openai-vision-key'
     visionInstanceName: 'your-azure-vision-instance-name'
     visionDeploymentName: 'gpt-4v'
-    reasoningEffort: 'high' # 'high',  (default)'medium', 'low'
+    reasoningEffort: 'high' # 'high',  (default)'medium', 'low',  After GPT-5 'minimal'
+    verbosity: 'medium' # After GPT-5 'high', (default)'medium', 'low'
     # temperature: 1 # o3-mini not support temperature
     imageKey: 'your-azure-openai-image-key'
     imageInstanceName: 'your-azure-image-instance-name'

@@ -488,15 +488,17 @@ var GoogleGeminiAdapter = class extends AIAdapter {
   async createMessage(options) {
     const isImageSupported = [
       // 画像対応のモデル
+      "gemini-2.5-flash-image-preview",
       "models/gemini-2.0-flash-preview-image-generation",
       "gemini-2.0-flash-exp-image-generation",
       "gemini-2.0-flash-preview-image-generation",
       //
       "gemini-2.0-flash-exp"
       // The support is not official
-    ].some((model) => this.model === model);
+    ].some((model) => this.model === model) || this.model.includes("-image");
     const isNotSupportedFunction = [
       // 関数未対応のモデル
+      "gemini-2.5-flash-image-preview",
       "gemini-2.5-pro-preview-tts",
       "gemini-2.5-flash-preview-tts",
       "models/gemini-2.0-flash-preview-image-generation",
@@ -795,9 +797,11 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       boolean: Type.BOOLEAN,
       array: Type.ARRAY
     };
-    const paramType = tool.function.parameters?.type;
-    if (paramType && typeMapping[paramType]) {
-      parameters.type = typeMapping[paramType];
+    if (tool.type === "function" && "function" in tool && tool.function?.parameters) {
+      const paramType = tool.function.parameters.type;
+      if (paramType && typeMapping[paramType]) {
+        parameters.type = typeMapping[paramType];
+      }
     }
   }
   createContents(messages) {
@@ -1070,7 +1074,8 @@ var ConfigLoader = class _ConfigLoader {
       imageKey: bot.imageKey,
       imageInstanceName: bot.imageInstanceName,
       imageDeploymentName: bot.imageDeploymentName,
-      reasoningEffort: bot.reasoningEffort
+      reasoningEffort: bot.reasoningEffort,
+      verbosity: bot.verbosity
     }));
     return providers;
   }
@@ -1089,6 +1094,7 @@ var OpenAIWrapper = class _OpenAIWrapper {
   TEMPERATURE;
   MAX_PROMPT_TOKENS;
   REASONING_EFFORT;
+  VERBOSITY;
   getMaxPromptTokens() {
     return this.MAX_PROMPT_TOKENS;
   }
@@ -1114,6 +1120,7 @@ var OpenAIWrapper = class _OpenAIWrapper {
     this.TEMPERATURE = providerConfig.temperature ?? Number(yamlConfig.OPENAI_TEMPERATURE ?? process.env["OPENAI_TEMPERATURE"] ?? 1);
     this.MAX_PROMPT_TOKENS = providerConfig.maxPromptTokens ?? Number(yamlConfig.MAX_PROMPT_TOKENS ?? process.env["MAX_PROMPT_TOKENS"] ?? 2e3);
     this.REASONING_EFFORT = providerConfig.reasoningEffort;
+    this.VERBOSITY = providerConfig.verbosity;
     this.name = providerConfig.name;
     if (!this.name) {
       openAILog.error("No name. Ignore provider config", providerConfig);
@@ -1525,6 +1532,7 @@ var OpenAIWrapper = class _OpenAIWrapper {
    * @param provider The provider to use for the chat completion.
    *
    */
+  // eslint-disable-next-line max-lines-per-function
   async createChatCompletion(messages, functions = void 0) {
     let useTools = true;
     const currentProvider = this.getAIProvider();
@@ -1551,13 +1559,24 @@ var OpenAIWrapper = class _OpenAIWrapper {
       messages,
       temperature: this.TEMPERATURE
     };
-    if (currentModel.startsWith("o1") || currentModel.startsWith("o3")) {
+    const useMaxCompletionTokens = [
+      // Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.
+      // とりあえずgpt-5やo1,o4,o4で始まるモデルはすべてmax_completion_tokensを使う
+      "gpt-5",
+      "o4",
+      "o3",
+      "o1"
+    ].some((model) => currentModel.startsWith(model));
+    if (useMaxCompletionTokens) {
       chatCompletionOptions.max_completion_tokens = this.MAX_TOKENS;
-      if (this.REASONING_EFFORT) {
-        chatCompletionOptions.reasoning_effort = this.REASONING_EFFORT;
-      }
     } else {
       chatCompletionOptions.max_tokens = this.MAX_TOKENS;
+    }
+    if (this.REASONING_EFFORT) {
+      chatCompletionOptions.reasoning_effort = this.REASONING_EFFORT;
+    }
+    if (this.VERBOSITY) {
+      chatCompletionOptions.verbosity = this.VERBOSITY;
     }
     if (functions && useTools) {
       if (currentModel.indexOf("gpt-3") >= 0) {
@@ -1589,14 +1608,21 @@ var OpenAIWrapper = class _OpenAIWrapper {
     openAILog.trace("chat.completions.create() Parameters", {
       model: chatCompletionOptions.model,
       max_tokens: chatCompletionOptions.max_tokens,
+      max_completion_tokens: chatCompletionOptions.max_completion_tokens,
       temperature: chatCompletionOptions.temperature,
+      reasoning_effort: chatCompletionOptions.reasoning_effort,
+      verbosity: chatCompletionOptions.verbosity,
       function_call: chatCompletionOptions.function_call,
       functions: chatCompletionOptions.functions?.map(
         (func) => `${func.name}(${this.toStringParameters(func.parameters)}): ${func.description}`
       ),
       tools_choice: chatCompletionOptions.tool_choice,
       tools: chatCompletionOptions.tools?.map(
-        (tool) => `${tool.type} ${tool.function.name}(${this.toStringParameters(tool.function.parameters)}): ${tool.function.description}`
+        (tool) => (
+          // tool.typeが'function'の場合のみfunctionプロパティにアクセスする
+          tool.type === "function" && "function" in tool ? `${tool.type} ${tool.function.name}(${this.toStringParameters(tool.function.parameters)}): ${tool.function.description}` : `${tool.type}`
+        )
+        //こちらの場合functionではないのでその旨をlogに出力
       )
     });
   }
@@ -2170,6 +2196,11 @@ var BotService2 = class {
                 excludeImage.push(data.images[0].secure_url);
               }
               content.push({ type: "image_url", image_url: { url: embed.url } });
+            }
+            if (embed.type === "opengraph" && embed.url && embed.data && embed.data?.type === "website") {
+              botLog.info(
+                `Ignore embed type: ${embed.type} data.type=${embed.data?.type}, use images`
+              );
             } else {
               botLog.warn(`Unsupported embed type: ${embed.type}. Skipping.`, embed);
             }
@@ -2227,15 +2258,7 @@ var BotService2 = class {
         // Add the Authentication header here
       };
     }
-    const response = await fetch(url, init).catch((error) => {
-      matterMostLog.error(`Fech Exception! url: ${url}`, error);
-      return { ok: false };
-    });
-    if (!response.ok) {
-      botLog.error(`Fetch Image URL HTTP error! status: ${response?.status}`);
-      return "";
-    }
-    let buffer = Buffer.from(await response.arrayBuffer());
+    let dataURL = "";
     if (["pdf", "x-javascript", "javascript", "x-python", "plain", "html", "css", "md", "csv", "xml", "rtf"].includes(
       format.replace(/^.+\//, "")
     )) {
@@ -2243,27 +2266,91 @@ var BotService2 = class {
       format = this.toMimeType(format, "text");
     } else if (["mov", "mpeg", "mp4", "mpg", "avi", "wmv", "mpegps", "flv"].includes(format.replace(/^.+\//, ""))) {
       format = this.toMimeType(format, "video");
+      dataURL = await this.makeLargeDataURL(url, init, format);
     } else if (["mp3", "wav", "ogg"].includes(format.replace(/^.+\//, ""))) {
       format = this.toMimeType(format, "audio");
+      dataURL = await this.makeLargeDataURL(url, init, format);
     } else {
-      if (!format || ["png", "jpeg", "webp", "gif"].includes(format.replace(/^.+\//, "")) && (width <= 0 || height <= 0)) {
-        const metadata = await sharp(buffer).metadata();
-        width = metadata.width ?? 0;
-        height = metadata.height ?? 0;
-        format = metadata.format ?? "";
+      let buffer = await this.fetchData(url, init);
+      ({ format, width, height, buffer } = await this.convertImage(format, width, height, buffer));
+      if (buffer.length > 0) {
+        dataURL = this.makeDataURL(format, buffer);
       }
-      if (!["png", "jpeg", "webp", "gif"].includes(format.replace(/^.+\//, ""))) {
-        matterMostLog.warn(`Unsupported image format: ${format}. Converting to JPEG.`);
-        buffer = await sharp(buffer).jpeg().toBuffer();
-        ({ format = "", width = 0, height = 0 } = await sharp(buffer).metadata());
-      }
-      buffer = await this.resizeImage(width, height, buffer);
-      format = this.toMimeType(format, "image");
     }
-    const mimeType = format;
-    const base64 = buffer.toString("base64");
-    const dataURL = "data:" + mimeType + ";base64," + base64;
     return dataURL;
+  }
+  // 大きなファイルの時も対応したdataURLを作る
+  async makeLargeDataURL(url, init, mimeType) {
+    const downloadSize = await this.getDownloadSize(url, init).catch((error) => {
+      botLog.error(`Fetch HEAD \u30A8\u30E9\u30FC: ${error}`);
+      return 0;
+    });
+    if (downloadSize > 2 * 1024 * 1024 * 1024) {
+      matterMostLog.warn(`File size too large to embed in data URL: ${downloadSize} bytes. url: ${url}`);
+      return "";
+    }
+    if (downloadSize > 20 * 1024 * 1024) {
+      matterMostLog.info(`File size too large to embed in data URL: ${downloadSize} bytes. url: ${url}`);
+      return "";
+    }
+    const buffer = await this.fetchData(url, init);
+    return this.makeDataURL(mimeType, buffer);
+  }
+  // Convert buffer to a BASE64 data URL
+  makeDataURL(mimeType, buffer) {
+    const base64 = buffer.toString("base64");
+    return "data:" + mimeType + ";base64," + base64;
+  }
+  // URLからデータをfetchする
+  async fetchData(url, init) {
+    const response = await fetch(url, init).catch((error) => {
+      matterMostLog.error(`Fech Exception! url: ${url}`, error);
+      return { ok: false };
+    });
+    if (!response.ok) {
+      botLog.error(`Fetch Image URL HTTP error! status: ${response?.status}`);
+      return Buffer.alloc(0);
+    }
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return buffer;
+  }
+  // 画像をOpenAIがサポートしている形式とサイズに変換する
+  async convertImage(format, width, height, buffer) {
+    if (!format || ["png", "jpeg", "webp", "gif"].includes(format.replace(/^.+\//, "")) && (width <= 0 || height <= 0)) {
+      const metadata = await sharp(buffer).metadata();
+      width = metadata.width ?? 0;
+      height = metadata.height ?? 0;
+      format = metadata.format ?? "";
+    }
+    if (!["png", "jpeg", "webp", "gif"].includes(format.replace(/^.+\//, ""))) {
+      matterMostLog.warn(`Unsupported image format: ${format}. Converting to JPEG.`);
+      buffer = await sharp(buffer).jpeg().toBuffer();
+      ({ format = "", width = 0, height = 0 } = await sharp(buffer).metadata());
+    }
+    buffer = await this.resizeImage(width, height, buffer);
+    format = this.toMimeType(format, "image");
+    return { format, width, height, buffer };
+  }
+  // URLのファイルサイズを調べる
+  async getDownloadSize(url, init) {
+    try {
+      const response = await fetch(url, { method: "HEAD", ...init });
+      if (!response.ok) {
+        botLog.error(`Fetch HEAD URL HTTP error! status: ${response?.status}`);
+        throw new Error(`Fetch HEAD URL HTTP error! status: ${response.status}`);
+      }
+      const contentLength = response.headers.get("Content-Length");
+      if (contentLength) {
+        botLog.log(`\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9\u30B5\u30A4\u30BA: ${contentLength} \u30D0\u30A4\u30C8 ${url}`);
+        return parseInt(contentLength, 10);
+      } else {
+        botLog.log(`Fetch HEAD Content-Length \u30D8\u30C3\u30C0\u30FC\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3067\u3057\u305F\u3002 ${url}`);
+        throw new Error(`Fetch HEAD URL Can't find Content-Length Header ${url}`);
+      }
+    } catch (error) {
+      botLog.error("Fetch HEAD \u30A8\u30E9\u30FC:", error);
+      throw error;
+    }
   }
   /**
    * 指定された形式をMIMEタイプに変換します。
@@ -2292,6 +2379,9 @@ var BotService2 = class {
     }
     if (Math.min(width, height) > shortEdge) {
       const resizeRatio = shortEdge / Math.min(width, height);
+      botLog.info(
+        `Resize image ${resizeRatio * 100}% ${width}x${height} to ${Math.round(width * resizeRatio)}x${Math.round(height * resizeRatio)}`
+      );
       width *= resizeRatio;
       height *= resizeRatio;
       resize = true;

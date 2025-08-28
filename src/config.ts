@@ -59,6 +59,7 @@ export class ConfigLoader {
       imageInstanceName: bot.imageInstanceName,
       imageDeploymentName: bot.imageDeploymentName,
       reasoningEffort: bot.reasoningEffort,
+      verbosity: bot.verbosity,
     }))
     // 他の設定項目もconfigから参照可能
     // 例: config.server, config.logging など

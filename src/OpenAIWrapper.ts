@@ -20,6 +20,7 @@ export class OpenAIWrapper {
   private TEMPERATURE: number
   private MAX_PROMPT_TOKENS: number
   private REASONING_EFFORT: OpenAI.Chat.Completions.ChatCompletionReasoningEffort | undefined
+  private VERBOSITY: 'low' | 'medium' | 'high' | null | undefined
   public getMaxPromptTokens() {
     return this.MAX_PROMPT_TOKENS
   }
@@ -50,7 +51,8 @@ export class OpenAIWrapper {
       providerConfig.temperature ?? Number(yamlConfig.OPENAI_TEMPERATURE ?? process.env['OPENAI_TEMPERATURE'] ?? 1)
     this.MAX_PROMPT_TOKENS =
       providerConfig.maxPromptTokens ?? Number(yamlConfig.MAX_PROMPT_TOKENS ?? process.env['MAX_PROMPT_TOKENS'] ?? 2000)
-    this.REASONING_EFFORT = providerConfig.reasoningEffort // 新機能なので全体設定や環境変数設定は無し values are low, medium, and high
+    this.REASONING_EFFORT = providerConfig.reasoningEffort // 新機能なので全体設定や環境変数設定は無し values are low, medium, and high.  And GPT-5 minimum
+    this.VERBOSITY = providerConfig.verbosity // 新機能なので全体設定や環境変数設定は無し values are low, medium, and high
 
     this.name = providerConfig.name
     // name重複チェックはnewされる前にしている
@@ -528,6 +530,7 @@ export class OpenAIWrapper {
    * @param provider The provider to use for the chat completion.
    *
    */
+  // eslint-disable-next-line max-lines-per-function
   public async createChatCompletion(
     messages: OpenAI.Chat.ChatCompletionMessageParam[],
     functions: OpenAI.Chat.ChatCompletionCreateParams.Function[] | undefined = undefined, //TODO: tools[]化
@@ -569,14 +572,29 @@ export class OpenAIWrapper {
       temperature: this.TEMPERATURE,
     }
     //TODO: messageのTOKEN数から最大値にする。レスポンス長くなるけど翻訳などが一発になる
-    if (currentModel.startsWith('o1') || currentModel.startsWith('o3')) {
+    const useMaxCompletionTokens = [
+      // Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.
+      // とりあえずgpt-5やo1,o4,o4で始まるモデルはすべてmax_completion_tokensを使う
+      'gpt-5',
+      'o4',
+      'o3',
+      'o1',
+    ].some(model => currentModel.startsWith(model))
+    if (useMaxCompletionTokens) {
       chatCompletionOptions.max_completion_tokens = this.MAX_TOKENS
-      if (this.REASONING_EFFORT) {
-        chatCompletionOptions.reasoning_effort = this.REASONING_EFFORT
-      }
     } else {
       // gpt-4o では、こちらでないとエラー
       chatCompletionOptions.max_tokens = this.MAX_TOKENS
+    }
+    // o1,o3,o4,gpt-5はReasoing Effortも使える defaultはmedium
+    if (this.REASONING_EFFORT) {
+      chatCompletionOptions.reasoning_effort = this.REASONING_EFFORT
+    }
+    // GPT-5はverbosityが使える defaultはmedium
+    if (this.VERBOSITY) {
+      // ドキュメントではtext.verbosityだけど → .chat.create()ではなくて.responses.create()だった
+      // https://platform.openai.com/docs/guides/latest-model?lang=javascript#verbosity
+      chatCompletionOptions.verbosity = this.VERBOSITY
     }
     if (functions && useTools) {
       if (currentModel.indexOf('gpt-3') >= 0) {
@@ -585,6 +603,7 @@ export class OpenAIWrapper {
         chatCompletionOptions.function_call = 'auto'
       } else {
         // gpt-4以降の新しいモデルならtoolsに展開
+        // TODO: Responses APIのType: Web検索やMCPなどのツールの使用 https://platform.openai.com/docs/guides/tools
         chatCompletionOptions.tools = functions.map(func => ({ type: 'function', function: func }))
         chatCompletionOptions.tool_choice = 'auto'
       }
@@ -613,7 +632,10 @@ export class OpenAIWrapper {
     log.trace('chat.completions.create() Parameters', {
       model: chatCompletionOptions.model,
       max_tokens: chatCompletionOptions.max_tokens,
+      max_completion_tokens: chatCompletionOptions.max_completion_tokens,
       temperature: chatCompletionOptions.temperature,
+      reasoning_effort: chatCompletionOptions.reasoning_effort,
+      verbosity: chatCompletionOptions.verbosity,
       function_call: chatCompletionOptions.function_call,
       functions: chatCompletionOptions.functions?.map(
         func => `${func.name}(${this.toStringParameters(func.parameters)}): ${func.description}`,
@@ -621,7 +643,10 @@ export class OpenAIWrapper {
       tools_choice: chatCompletionOptions.tool_choice,
       tools: chatCompletionOptions.tools?.map(
         tool =>
-          `${tool.type} ${tool.function.name}(${this.toStringParameters(tool.function.parameters)}): ${tool.function.description}`,
+          // tool.typeが'function'の場合のみfunctionプロパティにアクセスする
+          tool.type === 'function' && 'function' in tool
+            ? `${tool.type} ${tool.function.name}(${this.toStringParameters(tool.function.parameters)}): ${tool.function.description}`
+            : `${tool.type}`, //こちらの場合functionではないのでその旨をlogに出力
       ),
     })
   }
