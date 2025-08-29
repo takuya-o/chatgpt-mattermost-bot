@@ -524,7 +524,7 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       "gemini-2.5-pro",
       "gemini-2.5-flash",
       "gemini-2.5-flash-lite"
-    ].some((model) => this.model.startsWith(model));
+    ].some((model) => this.model.startsWith(model)) && !this.model.includes("-image");
     let systemInstruction = isImageSupported ? void 0 : this.createContents([options.messages.shift()])[0];
     let responseModalities = isImageSupported ? [Modality.IMAGE, Modality.TEXT] : [Modality.TEXT];
     if (["gemini-2.5-pro-preview-tts", "gemini-2.5-flash-preview-tts"].some((model) => this.model === model)) {

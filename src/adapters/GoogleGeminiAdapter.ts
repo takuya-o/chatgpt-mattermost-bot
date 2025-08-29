@@ -87,12 +87,13 @@ export class GoogleGeminiAdapter extends AIAdapter implements AIProvider {
       'gemini-2.5-flash-lite-preview-06-17',
     ].some(model => this.model === model)
     // https://ai.google.dev/gemini-api/docs/thinking?hl=ja#set-budget
-    const isSupportedThinkingBudget = [
-      // Thinking Budgetが使えるモデル
-      'gemini-2.5-pro',
-      'gemini-2.5-flash',
-      'gemini-2.5-flash-lite',
-    ].some(model => this.model.startsWith(model))
+    const isSupportedThinkingBudget =
+      [
+        // Thinking Budgetが使えるモデル
+        'gemini-2.5-pro',
+        'gemini-2.5-flash',
+        'gemini-2.5-flash-lite',
+      ].some(model => this.model.startsWith(model)) && !this.model.includes('-image')
     let systemInstruction = isImageSupported
       ? undefined // gemini-2.0-flash-preview-image-generation などでシステムインストラクションを入れるとDeveloper instruction is not enabled エラー
       : this.createContents([options.messages.shift() as OpenAI.Chat.Completions.ChatCompletionMessageParam])[0]
