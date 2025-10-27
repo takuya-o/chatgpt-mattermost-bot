@@ -488,6 +488,8 @@ var GoogleGeminiAdapter = class extends AIAdapter {
   async createMessage(options) {
     const isImageSupported = [
       // 画像対応のモデル
+      "gemini-2.5-flash-image-latest",
+      "gemini-2.5-flash-image",
       "gemini-2.5-flash-image-preview",
       "models/gemini-2.0-flash-preview-image-generation",
       "gemini-2.0-flash-exp-image-generation",
@@ -498,6 +500,8 @@ var GoogleGeminiAdapter = class extends AIAdapter {
     ].some((model) => this.model === model) || this.model.includes("-image");
     const isNotSupportedFunction = [
       // 関数未対応のモデル
+      "gemini-2.5-flash-image-latest",
+      "gemini-2.5-flash-image",
       "gemini-2.5-flash-image-preview",
       "gemini-2.5-pro-preview-tts",
       "gemini-2.5-flash-preview-tts",
@@ -517,6 +521,7 @@ var GoogleGeminiAdapter = class extends AIAdapter {
       "gemini-2.5-pro-preview-05-06",
       "gemini-2.5-flash",
       "gemini-2.5-flash-preview-05-20",
+      "gemini-2.5-flash-lite",
       "gemini-2.5-flash-lite-preview-06-17"
     ].some((model) => this.model === model);
     const isSupportedThinkingBudget = [

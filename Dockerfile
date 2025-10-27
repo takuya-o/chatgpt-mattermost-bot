@@ -1,8 +1,9 @@
 # NPM builder image
+# FROM node:24-trixie-slim AS npm_builder
 FROM node:24-bookworm-slim AS npm_builder
-#22.12.0-bookworm-slim (Debian 12)
-#22-bookworm-slim, 22-slim, 22.12-bookworm-slim, 22.12-slim, 22.12.0-bookworm-slim, 22.12.0-slim, jod-bookworm-slim, jod-slim, lts-bookworm-slim, lts-slim
-# bookworm = Debian12
+# node:24-trixie-slim 24.10.0-trixie-slim (Debian 13)
+# node:24-bookworm-slim 24.10.0-bookworm-slim (Debian 12)
+#22-bookworm-slim, 22-slim, 22.21-bookworm-slim, 22.21-slim, 22.21.0-bookworm-slim, 22.21.0-slim, jod-bookworm-slim, jod-slim, lts-bookworm-slim, lts-slim
 
 WORKDIR /app
 COPY [ "package.json", "package-lock.json", ".npmrc", \
